@@ -29,7 +29,7 @@ async def async_setup_entry(
     entry: MultiroomConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the read-only Multiroom Climate entity from a config entry."""
+    """Set up the Multiroom Climate entity from a config entry."""
     async_add_entities([MultiroomClimateEntity(entry.runtime_data, entry)])
 
 
@@ -88,12 +88,13 @@ class MultiroomClimateEntity(
 
     @property
     def extra_state_attributes(self) -> dict[str, float | int | str | None]:
-        """Surface the wrapped band and the controller's shadow decision for observability.
+        """Surface the wrapped band and the controller's decision for observability.
 
         ``band_low``/``band_high`` are the thermostat's current AUTO band. ``shadow_status`` is what
         the controller is doing (or why it isn't), ``shadow_sensors_*`` expose sensor degradation,
-        and the remaining ``shadow_*`` keys are what it *would* do — the target it holds, learned
-        bias offset, the band it would propose, and the message it would send. Nothing is written.
+        and the remaining ``shadow_*`` keys are its decision — the target it holds, learned bias
+        offset, the band it would set, and any failsafe message. The ``shadow_`` prefix marks these
+        as diagnostics; the proposed band is actually written to the thermostat when the switch is on.
         """
         data = self.coordinator.data
         attrs: dict[str, float | int | str | None] = {

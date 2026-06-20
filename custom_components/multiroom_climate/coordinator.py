@@ -1,10 +1,11 @@
-"""Coordinator: poll the target sensors + wrapped thermostat, run the controller in shadow.
+"""Coordinator: poll the target sensors + wrapped thermostat and run the controller each tick.
 
 Per SPEC §5 the coordinator owns *all* the reads each tick — the room sensors (for the weighted
 house average) and the wrapped thermostat (its HVAC mode, AUTO band, and temperature bounds). It
-also runs the pure ``controller.decide()`` each tick and records the proposed ``Action`` **without
-writing anything to the thermostat** (SPEC §6 step 5c, shadow mode). Turning the proposal into a
-real ``climate.set_temperature`` plus durable persistence land in later PRs.
+runs the pure ``controller.decide()`` each tick and records the proposed ``Action``. When the master
+switch is **on** it writes that band to the thermostat via ``climate.set_temperature``; when **off**
+it only records the proposal (so the ``shadow_*`` attributes still show what it would do). Control
+state is persisted to a ``Store`` so the learned bias survives restarts.
 
 Sensor availability + failsafe (SPEC §3/§4.8): a fresh weighted average needs at least one usable
 sensor. With *some* sensors stale we still regulate off the survivors (a transient dropout must not
@@ -120,10 +121,11 @@ class CoordinatorData:
     """The regulated view computed each tick: the house average + the wrapped thermostat's state.
 
     ``band_low``/``band_high`` are the wrapped thermostat's current AUTO setpoints — the band the
-    controller will slide once actuation lands. ``target``/``learned_offset``/``proposed`` are the
-    shadow-mode outputs: what the controller *would* do, with nothing written. ``status`` is the
-    one-word reason for this tick (``decide()``'s reason, or why it didn't run); ``fresh_sensors``/
-    ``total_sensors`` expose sensor degradation; ``thermostat_present`` drives entity availability.
+    controller slides. ``target``/``learned_offset``/``proposed`` are the controller's decision this
+    tick (the band in ``proposed`` is written to the thermostat when ``enabled``, else just recorded).
+    ``status`` is the one-word reason for this tick (``decide()``'s reason, or why it didn't run);
+    ``fresh_sensors``/``total_sensors`` expose sensor degradation; ``thermostat_present`` drives
+    entity availability; ``enabled`` is the master-switch state.
     """
 
     house_average: float | None
@@ -142,7 +144,7 @@ class CoordinatorData:
 
 
 class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
-    """Polls sensors + wrapped thermostat, runs ``decide()`` in shadow, exposes a ``CoordinatorData``."""
+    """Polls sensors + wrapped thermostat, runs ``decide()`` (actuating when enabled), exposes a ``CoordinatorData``."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
