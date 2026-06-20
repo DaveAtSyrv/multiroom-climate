@@ -69,8 +69,10 @@ a manual hold until then.
 
 ## Usage
 
-- **Turn on the master switch** to let the integration regulate. It seeds the target to the current
-  house average ("hold where we are now") and slides the thermostat's band from there.
+- **Turn on the master switch** to let the integration regulate. On first enable (or whenever you
+  haven't set a target yourself) it seeds the target to the current house average ("hold where we are
+  now"); a target you've set explicitly is kept across an off→on toggle. It slides the thermostat's
+  band from there.
 - **Set the target** on the climate entity to the house temperature you want.
 - **Turn the switch off** at any time to instantly hand full control back to the thermostat.
 - Diagnostic `shadow_*` attributes on the climate entity expose what the controller is doing (target,
