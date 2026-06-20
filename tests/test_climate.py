@@ -1,11 +1,13 @@
 """Tests for the Multiroom Climate entity.
 
-Set the integration up through a real config entry and assert the entity surfaces the weighted
-house average, mirrors the wrapped thermostat, reports in the system unit, and exposes a settable
+Set the integration up through a real config entry and assert the entity surfaces the house
+average, mirrors the wrapped thermostat, reports in the system unit, and exposes a settable
 target. (Actuation/no-actuation behaviour is covered in test_coordinator.py.)
 """
 
 from __future__ import annotations
+
+from unittest.mock import patch
 
 from homeassistant.components.climate import ClimateEntityFeature, HVACMode
 from homeassistant.core import HomeAssistant
@@ -325,3 +327,21 @@ async def test_target_dial_falls_back_without_wrapped_bounds(
 
     assert state is not None
     assert state.attributes["min_temp"] < state.attributes["max_temp"]
+
+
+async def test_set_temperature_without_temperature_is_noop(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # set_temperature called without a temperature (e.g. only a fan/humidity field) does nothing —
+    # it must not hand a None target to the coordinator.
+    hass.states.async_set("sensor.living_room", "70.0")
+    hass.states.async_set("sensor.kitchen", "70.0")
+    hass.states.async_set("climate.daikin", "heat_cool", {"hvac_modes": ["off", "heat_cool"]})
+    await _setup(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    entity = climate_platform.MultiroomClimateEntity(entry.runtime_data, entry)
+
+    with patch.object(entry.runtime_data, "async_set_target") as set_target:
+        await entity.async_set_temperature()
+
+    set_target.assert_not_called()
