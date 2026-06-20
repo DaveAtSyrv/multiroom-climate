@@ -397,7 +397,8 @@ def test_schedule_degenerate_equal_starts_is_all_night():
     assert scheduled_target(0.0, cfg) == 62.0
 
 
-def test_schedule_lead_larger_than_window_does_not_crash():
-    # A lead wider than the night window still resolves via modular arithmetic (no exception).
+def test_schedule_lead_larger_than_window_resolves_via_modular_arithmetic():
+    # A lead wider than a window still resolves cleanly. lead 600: day_start=(360−600)%1440=1200,
+    # night_start=(1320−600)%1440=720; at noon (720) the day arc [1200,720) wraps and excludes it.
     cfg = replace(_SCHED_CFG, optimal_start_lead_min=600.0)
-    assert scheduled_target(_NOON, cfg) in (70.0, 62.0)
+    assert scheduled_target(_NOON, cfg) == 62.0
