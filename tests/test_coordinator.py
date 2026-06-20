@@ -7,6 +7,8 @@ non-numeric / unknown HVAC mode" behaviour is covered end to end.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from homeassistant.components.climate import HVACMode
 from homeassistant.core import HomeAssistant
@@ -36,10 +38,13 @@ def test_house_average_empty_is_none() -> None:
     assert house_average([]) is None
 
 
-def _make_coordinator(hass: HomeAssistant, sensors: list[str]) -> MultiroomClimateCoordinator:
+def _make_coordinator(
+    hass: HomeAssistant, sensors: list[str], entry_id: str = "test_entry"
+) -> MultiroomClimateCoordinator:
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test",
+        entry_id=entry_id,
         data={CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: sensors},
     )
     return MultiroomClimateCoordinator(hass, entry)
@@ -277,3 +282,72 @@ async def test_partial_staleness_regulates_off_survivors(hass: HomeAssistant) ->
     assert data.total_sensors == 2
     assert data.proposed is not None
     assert data.status == "within_deadband"
+
+
+async def test_restores_state_on_load(hass: HomeAssistant, hass_storage) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    hass_storage[coordinator._store.key] = {
+        "version": 1,
+        "data": {
+            "learned_offset": -1.5,
+            "target": 71.0,
+            "last_target": 71.0,
+            "last_change_ts": 0.0,
+        },
+    }
+
+    await coordinator.async_load_state()
+
+    assert coordinator._learned_offset == -1.5
+    assert coordinator._target == 71.0
+
+    # The restored target is not re-seeded to the current house average on the next tick.
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    data = await coordinator._async_update_data()
+    assert data.target == 71.0
+
+
+async def test_load_with_no_stored_state_keeps_defaults(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator.async_load_state()  # nothing stored
+
+    assert coordinator._learned_offset == 0.0
+    assert coordinator._target is None
+
+
+async def test_saves_and_reloads_control_state(hass: HomeAssistant, hass_storage) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # settled tick seeds target + learns a non-zero offset
+    learned = coordinator._learned_offset
+    assert learned != 0.0
+    await coordinator._store.async_save(coordinator._persisted_state())  # flush the debounced write
+
+    # A fresh coordinator for the same entry restores the persisted control state.
+    reloaded = _make_coordinator(hass, ["sensor.a"])
+    await reloaded.async_load_state()
+    assert reloaded._learned_offset == learned
+    assert reloaded._target == 70.0
+
+
+async def test_failsafe_tick_does_not_save(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # tick 1: seeds + learns → a real state change
+    hass.states.async_set("sensor.a", "unavailable")  # lose the sensor → failsafe
+    with patch.object(coordinator, "_save_state") as save:
+        data = await coordinator._async_update_data()  # tick 2: decide runs but nothing mutates
+
+    assert data.status == "failsafe"
+    save.assert_not_called()  # snapshot-compare skips the write when no persisted field changed

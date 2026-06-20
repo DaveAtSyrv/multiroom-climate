@@ -30,7 +30,8 @@ from homeassistant.components.climate import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import convert
 from homeassistant.util import dt as dt_util
@@ -44,6 +45,19 @@ _UPDATE_INTERVAL = timedelta(seconds=60)
 # Status strings for the cases where decide() doesn't run (it owns its own reasons otherwise).
 _STATUS_NO_BAND = "no_thermostat_band"
 _STATUS_WAITING = "waiting_for_first_reading"
+
+# Persistence: the learned offset converges via a slow EMA, so it's expensive to relearn after a
+# restart. Debounced writes batch the per-tick offset nudges to roughly one disk write per delay.
+_STORE_VERSION = 1
+_SAVE_DELAY_S = 600.0
+
+
+def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, float | None]]:
+    """The per-config-entry Store holding the coordinator's control state.
+
+    A module-level factory so entry removal can delete the file without constructing a coordinator.
+    """
+    return Store(hass, _STORE_VERSION, f"{DOMAIN}.{entry.entry_id}")
 
 
 def house_average(temps: list[float]) -> float | None:
@@ -142,11 +156,42 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         # system unit and correct for the actual equipment — so the defaults here are just a base.
         self._config = ControllerConfig()
 
-        # Shadow control state (in-memory; durable persistence lands with actuation).
+        # Control state — restored from disk in async_load_state(), then kept in memory and saved
+        # back (debounced) as it evolves. Persisting it means the learned bias and target survive
+        # restarts instead of relearning from scratch.
+        self._store = build_store(hass, entry)
         self._target: float | None = None
         self._last_target: float | None = None
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
+
+    async def async_load_state(self) -> None:
+        """Restore persisted control state before the first refresh.
+
+        Restoring ``target`` means we don't re-seed it to the current house average on restart.
+        Restoring ``last_target`` keeps the feedforward gate sound once 5d makes the target
+        user-settable — today the two are always equal, so feedforward is inert either way.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        self._learned_offset = stored.get("learned_offset", 0.0)
+        self._target = stored.get("target")
+        self._last_target = stored.get("last_target")
+        self._last_change_ts = stored.get("last_change_ts", 0.0)
+
+    @callback
+    def _persisted_state(self) -> dict[str, float | None]:
+        return {
+            "learned_offset": self._learned_offset,
+            "target": self._target,
+            "last_target": self._last_target,
+            "last_change_ts": self._last_change_ts,
+        }
+
+    def _save_state(self) -> None:
+        """Debounced write of the control state to disk (the ``.storage`` file, not the thermostat)."""
+        self._store.async_delay_save(self._persisted_state, _SAVE_DELAY_S)
 
     def _read_sensors(self) -> tuple[float | None, int]:
         """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
@@ -222,6 +267,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         fires (the seeded target is constant; ``_last_target`` is wired for 5d's settable target).
         The within-deadband offset learning — the genuine "67-to-hold-70" bias — is what runs live.
         """
+        # Snapshot the persisted fields, then save iff any changed this tick — robust to which branch
+        # mutated what (and to fields added later) without a hand-maintained flag.
+        before = self._persisted_state()
+
         # Seed the target to the current operating point so the within-deadband learning branch runs
         # from the first tick (the actual user-settable target arrives with actuation).
         if available and self._target is None:
@@ -249,6 +298,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         if action.set_band:
             self._last_change_ts = now_ts
         self._last_target = self._target
+        if self._persisted_state() != before:
+            self._save_state()
         return action
 
     async def _async_update_data(self) -> CoordinatorData:
