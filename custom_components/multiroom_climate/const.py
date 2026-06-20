@@ -16,8 +16,3 @@ CONF_NIGHT_TEMP = "night_temp"
 CONF_DAY_START = "day_start"
 CONF_NIGHT_START = "night_start"
 CONF_OPTIMAL_START_LEAD = "optimal_start_lead"
-
-# Sensible setpoint defaults per system unit (°C uses the ControllerConfig defaults; °F is their
-# rounded equivalent — 21°C≈70°F, 18°C≈64°F — so a Fahrenheit install doesn't default to "21°F").
-_DEFAULT_DAY_NIGHT_C = (21.0, 18.0)
-_DEFAULT_DAY_NIGHT_F = (70.0, 64.0)

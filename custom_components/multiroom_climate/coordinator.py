@@ -87,13 +87,12 @@ def _time_to_minutes(value: str | None, default: float) -> float:
 def _config_from_options(options: dict) -> ControllerConfig:
     """Overlay any configured day/night schedule on the base controller config.
 
-    Empty options (schedule never configured) → plain ``ControllerConfig()`` defaults. The schedule
-    fields are inert until the coordinator calls ``scheduled_target()`` (7c); 7b only plumbs them so a
-    change in the options flow is observable end-to-end (options → ``ControllerConfig``).
+    Empty options (schedule never configured) fall through to plain ``ControllerConfig()`` defaults via
+    the per-field ``.get(..., default)`` fallbacks. The schedule fields are inert until the coordinator
+    calls ``scheduled_target()`` (7c); 7b only plumbs them so a change in the options flow is observable
+    end-to-end (options → ``ControllerConfig``).
     """
     base = ControllerConfig()
-    if not options:
-        return base
     return replace(
         base,
         day_temp=options.get(CONF_DAY_TEMP, base.day_temp),

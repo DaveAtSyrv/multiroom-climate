@@ -23,8 +23,6 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    _DEFAULT_DAY_NIGHT_C,
-    _DEFAULT_DAY_NIGHT_F,
     CONF_CLIMATE_ENTITY,
     CONF_DAY_START,
     CONF_DAY_TEMP,
@@ -36,12 +34,19 @@ from .const import (
     CONF_TARGET_SENSORS,
     DOMAIN,
 )
+from .controller import ControllerConfig
 
-# Display defaults for an unconfigured schedule — mirror the ControllerConfig fallbacks (06:00 day,
-# 22:00 night setback, 45-min optimal-start lead). Temps default per system unit (see _schedule_schema).
-_DEFAULT_DAY_START = "06:00:00"
-_DEFAULT_NIGHT_START = "22:00:00"
-_DEFAULT_LEAD_MIN = 45
+# The only schedule default with no engine equivalent: ControllerConfig's setpoints are °C, so a
+# Fahrenheit install needs its own pair (≈70/64) rather than defaulting to a nonsensical "21°F". Every
+# other default (°C temps, start times, lead) is derived from ControllerConfig in _schedule_schema so
+# the form prefill can't drift from what the engine actually runs.
+_DEFAULT_DAY_NIGHT_F = (70.0, 64.0)
+
+
+def _minutes_to_time(minutes: float) -> str:
+    """Format minutes-since-midnight as the TimeSelector's ``"HH:MM:SS"`` (inverse of _time_to_minutes)."""
+    hours, mins = divmod(int(minutes), 60)
+    return f"{hours:02d}:{mins:02d}:00"
 
 _USER_SCHEMA = vol.Schema(
     {
@@ -98,8 +103,11 @@ def _schedule_schema(unit: str, options: dict[str, Any]) -> vol.Schema:
     Fahrenheit install and we store °F, which the unit-agnostic controller consumes as-is. The Fahrenheit
     default pair (≈70/64) keeps an F install from defaulting to a nonsensical "21".
     """
+    base = ControllerConfig()
     fahrenheit = unit == UnitOfTemperature.FAHRENHEIT
-    default_day, default_night = _DEFAULT_DAY_NIGHT_F if fahrenheit else _DEFAULT_DAY_NIGHT_C
+    default_day, default_night = (
+        _DEFAULT_DAY_NIGHT_F if fahrenheit else (base.day_temp, base.night_temp)
+    )
     temp_min, temp_max = (40.0, 95.0) if fahrenheit else (5.0, 35.0)
     temp_selector = selector.NumberSelector(
         selector.NumberSelectorConfig(
@@ -119,14 +127,16 @@ def _schedule_schema(unit: str, options: dict[str, Any]) -> vol.Schema:
                 CONF_NIGHT_TEMP, default=options.get(CONF_NIGHT_TEMP, default_night)
             ): temp_selector,
             vol.Required(
-                CONF_DAY_START, default=options.get(CONF_DAY_START, _DEFAULT_DAY_START)
+                CONF_DAY_START,
+                default=options.get(CONF_DAY_START, _minutes_to_time(base.day_start_min)),
             ): selector.TimeSelector(),
             vol.Required(
-                CONF_NIGHT_START, default=options.get(CONF_NIGHT_START, _DEFAULT_NIGHT_START)
+                CONF_NIGHT_START,
+                default=options.get(CONF_NIGHT_START, _minutes_to_time(base.night_start_min)),
             ): selector.TimeSelector(),
             vol.Required(
                 CONF_OPTIMAL_START_LEAD,
-                default=options.get(CONF_OPTIMAL_START_LEAD, _DEFAULT_LEAD_MIN),
+                default=options.get(CONF_OPTIMAL_START_LEAD, int(base.optimal_start_lead_min)),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=240, step=5, unit_of_measurement="min", mode="box"
