@@ -46,7 +46,13 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_CLIMATE_ENTITY,
+    CONF_DAY_START,
+    CONF_DAY_TEMP,
     CONF_HUMIDITY_SENSOR,
+    CONF_NIGHT_START,
+    CONF_NIGHT_TEMP,
+    CONF_OPTIMAL_START_LEAD,
+    CONF_SCHEDULE_ENABLED,
     CONF_TARGET_SENSORS,
     DOMAIN,
 )
@@ -61,6 +67,41 @@ from .controller import (
 
 _LOGGER = logging.getLogger(__name__)
 _UPDATE_INTERVAL = timedelta(seconds=60)
+
+
+def _time_to_minutes(value: str | None, default: float) -> float:
+    """Convert a ``"HH:MM:SS"`` wall-clock string (the TimeSelector's format) to minutes-since-midnight.
+
+    Falls back to ``default`` for a missing/malformed value so a half-written option can't crash the
+    tick. The engine speaks minutes (see ``scheduled_target``); this is the HA-boundary translation.
+    """
+    if not value:
+        return default
+    try:
+        hh, mm, *_ = value.split(":")
+        return float(int(hh) * 60 + int(mm))
+    except (ValueError, TypeError):
+        return default
+
+
+def _config_from_options(options: dict) -> ControllerConfig:
+    """Overlay any configured day/night schedule on the base controller config.
+
+    Empty options (schedule never configured) → plain ``ControllerConfig()`` defaults. The schedule
+    fields are inert until the coordinator calls ``scheduled_target()`` (7c); 7b only plumbs them so a
+    change in the options flow is observable end-to-end (options → ``ControllerConfig``).
+    """
+    base = ControllerConfig()
+    if not options:
+        return base
+    return replace(
+        base,
+        day_temp=options.get(CONF_DAY_TEMP, base.day_temp),
+        night_temp=options.get(CONF_NIGHT_TEMP, base.night_temp),
+        day_start_min=_time_to_minutes(options.get(CONF_DAY_START), base.day_start_min),
+        night_start_min=_time_to_minutes(options.get(CONF_NIGHT_START), base.night_start_min),
+        optimal_start_lead_min=options.get(CONF_OPTIMAL_START_LEAD, base.optimal_start_lead_min),
+    )
 
 # Status strings for the cases where decide() doesn't run (it owns its own reasons otherwise).
 _STATUS_NO_BAND = "no_thermostat_band"
@@ -213,10 +254,13 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         # Optional RH sensor; .get() so entries created before this key still load. None disables overcool.
         self._humidity_sensor: str | None = entry.data.get(CONF_HUMIDITY_SENSOR)
 
-        # Base tunables (deadband, gain, rate limit, EMA). The safety bounds (temp_min/temp_max) are
-        # overridden each tick from the wrapped thermostat's own min_temp/max_temp — already in the
-        # system unit and correct for the actual equipment — so the defaults here are just a base.
-        self._config = ControllerConfig()
+        # Base tunables (deadband, gain, rate limit, EMA) plus any day/night schedule from the options
+        # flow. The safety bounds (temp_min/temp_max) are overridden each tick from the wrapped
+        # thermostat's own min_temp/max_temp — already in the system unit and correct for the actual
+        # equipment — so the defaults here are just a base.
+        self._config = _config_from_options(entry.options)
+        # Schedule gate, consumed by the optimal-start tick in 7c (no scheduled_target call yet).
+        self._schedule_enabled: bool = entry.options.get(CONF_SCHEDULE_ENABLED, False)
 
         # Control state — restored from disk in async_load_state(), then kept in memory and saved
         # back (debounced) as it evolves. Persisting it means the learned bias and target survive

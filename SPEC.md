@@ -165,7 +165,13 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
      midnight, with a fixed optimal-start lead that pulls **both** transitions earlier (the night
      setback begins the lead early too — a deliberate v1 simplification; occupancy-aware start is v2).
      Half-open arc, wraparound-safe. No caller yet (pure-first, like `decide()` in #3/#4). (#19)
-   - 7b. ⬜ Schedule config (day/night temps + start times + lead) via an options flow.
+   - 7b. ✅ Schedule config (day/night temps + start times + lead) via the integration's first
+     `OptionsFlow`. Temps collected/stored in the *system unit* (Fahrenheit default ≈70/64, not a
+     nonsensical "21°F"); start times are `TimeSelector` "HH:MM:SS" → minutes via a pure
+     `_time_to_minutes`; `_config_from_options` overlays them on `ControllerConfig` (empty options →
+     defaults). An `add_update_listener` reloads the entry on options change so the coordinator
+     rebuilds. A `schedule_enabled` toggle is stored for 7c's gate. Schedule values stay inert until
+     7c calls `scheduled_target` (shadow-before-actuate, like 6a).
    - 7c. ⬜ Wire into the coordinator: convert HA local wall-clock → minutes (`dt_util.now()`, NOT
      `utcnow()`); on a *change* in `scheduled_target` vs last tick, re-assert the target via
      `async_set_target` (compare-to-last so a mid-period manual hold survives until the next

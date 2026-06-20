@@ -23,5 +23,24 @@
     "abort": {
       "already_configured": "This thermostat is already controlled by a Multiroom Climate entry."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Day/night schedule",
+        "description": "Optional setback schedule. When enabled, the target follows a day and a night setpoint, reached early by the optimal-start lead. Temperatures are in your system's unit.",
+        "data": {
+          "schedule_enabled": "Use the day/night schedule",
+          "day_temp": "Day temperature",
+          "night_temp": "Night temperature",
+          "day_start": "Day starts at",
+          "night_start": "Night starts at",
+          "optimal_start_lead": "Optimal-start lead (minutes)"
+        },
+        "data_description": {
+          "optimal_start_lead": "How early to begin each transition so the home reaches the new setpoint by its scheduled time."
+        }
+      }
+    }
   }
 }
