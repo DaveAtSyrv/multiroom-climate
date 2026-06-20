@@ -11,9 +11,13 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.components.climate import HVACMode
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
@@ -336,6 +340,80 @@ async def test_saves_and_reloads_control_state(hass: HomeAssistant, hass_storage
     await reloaded.async_load_state()
     assert reloaded._learned_offset == learned
     assert reloaded._target == 70.0
+
+
+async def _enable_and_drift(hass: HomeAssistant) -> MultiroomClimateCoordinator:
+    """Seed a coordinator at target 70 with control enabled, then drift the house cold (→ trim)."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    coordinator.set_enabled(True)
+    await coordinator._async_update_data()  # seeds target = 70 (within deadband, no write)
+    hass.states.async_set("sensor.a", "66.0")  # cold → upward trim demanded
+    return coordinator
+
+
+async def test_writes_band_when_enabled(hass: HomeAssistant) -> None:
+    coordinator = await _enable_and_drift(hass)
+    calls = async_mock_service(hass, "climate", "set_temperature")
+
+    data = await coordinator._async_update_data()
+
+    assert data.proposed is not None and data.proposed.reason == "trim"
+    assert len(calls) == 1
+    assert calls[0].data["entity_id"] == "climate.daikin"
+    assert calls[0].data["target_temp_low"] == pytest.approx(67.5)
+    assert calls[0].data["target_temp_high"] == pytest.approx(69.5)
+    assert coordinator._last_change_ts > 0  # advanced on the successful write
+
+
+async def test_no_write_when_disabled(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])  # default: disabled
+    await coordinator._async_update_data()  # seeds target
+    hass.states.async_set("sensor.a", "66.0")
+    calls = async_mock_service(hass, "climate", "set_temperature")
+
+    data = await coordinator._async_update_data()
+
+    # decide() still proposes the trim (shadow), but nothing is written and the clock doesn't move.
+    assert data.proposed is not None and data.proposed.reason == "trim"
+    assert len(calls) == 0
+    assert coordinator._last_change_ts == 0.0
+
+
+async def test_failed_write_does_not_advance_rate_limit(hass: HomeAssistant) -> None:
+    coordinator = await _enable_and_drift(hass)
+
+    async def _boom(call: ServiceCall) -> None:
+        raise HomeAssistantError("device offline")
+
+    hass.services.async_register("climate", "set_temperature", _boom)
+
+    data = await coordinator._async_update_data()
+
+    assert data.proposed is not None and data.proposed.reason == "trim"
+    # A failed write must not advance the rate-limit clock — next tick retries.
+    assert coordinator._last_change_ts == 0.0
+
+
+async def test_no_write_on_failsafe_even_when_enabled(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    coordinator.set_enabled(True)
+    await coordinator._async_update_data()  # seed
+    hass.states.async_set("sensor.a", "unavailable")  # lose sensor → failsafe (set_band False)
+    calls = async_mock_service(hass, "climate", "set_temperature")
+
+    data = await coordinator._async_update_data()
+
+    assert data.status == "failsafe"
+    assert len(calls) == 0
 
 
 async def test_failsafe_tick_does_not_save(hass: HomeAssistant) -> None:

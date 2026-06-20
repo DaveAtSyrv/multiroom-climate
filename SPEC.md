@@ -123,9 +123,16 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        last target/change) saved to a `helpers.storage.Store` (debounced) and restored before the
        first refresh, so the slow-EMA bias survives restarts. Restoring the target also avoids a
        restart re-seed; persisting `last_target` keeps 5d-4's feedforward gate sound. (#11)
-     - 5d-4. ⬜ The flip — settable target (resolve single-vs-range HA modeling, verify against
-       Versatile Thermostat's `over_climate`) + real `climate.set_temperature` + master kill switch.
-       Advisor consult before building (first real writes).
+     - 5d-4a. ✅ The flip — real `climate.set_temperature` actuation behind a master **kill switch**
+       (separate `switch` entity, `RestoreEntity`, **default off**). Writes only when
+       `enabled AND proposed.set_band`; `last_change_ts` advances only on a *successful* write; a
+       failed write is logged and swallowed. Enabling re-seeds the target ("hold where we are now");
+       the wrapped band is the actuation interface, so our entity stays `supported_features = 0`. (#12)
+     - 5d-4b. ⬜ **NEXT:** user-settable target — give the entity its own `target_temperature`
+       (resolve single-vs-range HA modeling: verify `HEAT_COOL` + single setpoint against Versatile
+       Thermostat's `over_climate` + a harness test) wired to the same coordinator target. Must also
+       teach `set_enabled(reseed=True)` to *not* wipe a user-set target on re-enable (today it nulls
+       the seeded target; once the user picks one, re-enable should keep it).
 6. ⬜ Humidity bias + fan-circulate layers.
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
