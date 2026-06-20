@@ -147,7 +147,13 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
    - 6b. ✅ Humidity sensor in the config flow (optional, single RH sensor) + RH read wired into the
      coordinator tick (stale/absent → `None` → overcool off; no humidity failsafe). Surfaced as a
      `shadow_humidity` attribute for observability. (#16)
-   - 6c. ⬜ Fan-circulate (continuous fan when room spread exceeds threshold).
+   - 6c. Fan-circulate (continuous fan when room spread exceeds threshold) — shadow → actuate, like 5c→5d:
+     - 6c-1. ✅ Pure `decide_fan(spread, circulating, config)` + spread computed in the coordinator and
+       surfaced as `shadow_spread` / `shadow_fan_status` / `shadow_proposed_fan`. Spread-only (NOT
+       gated on HVAC mode — stratification builds when idle); two-threshold hysteresis is the only
+       anti-thrash; `spread=None` (<2 fresh sensors) holds. No fan write yet.
+     - 6c-2. ⬜ The `set_fan_mode` write behind the master enable switch (FAN_ON/FAN_AUTO mapping +
+       fan-mode availability check + user-manual-fan override handling).
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
    default store. (v2: direct Skyport API + reauth.)
