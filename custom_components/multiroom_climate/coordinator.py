@@ -70,6 +70,17 @@ class _WrappedReading:
     temp_max: float | None
 
 
+# The "thermostat missing/unavailable" reading — shareable because the dataclass is frozen.
+_NO_READING = _WrappedReading(
+    hvac_mode=None,
+    hvac_modes=(),
+    band_low=None,
+    band_high=None,
+    temp_min=None,
+    temp_max=None,
+)
+
+
 @dataclass(frozen=True)
 class CoordinatorData:
     """The regulated view computed each tick: the house average + the wrapped thermostat's state.
@@ -134,7 +145,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     def _read_wrapped(self) -> _WrappedReading:
         wrapped = self.hass.states.get(self._wrapped)
         if wrapped is None:
-            return _WrappedReading(None, (), None, None, None, None)
+            return _NO_READING
         hvac_mode = (
             _to_hvac_mode(wrapped.state)
             if wrapped.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
