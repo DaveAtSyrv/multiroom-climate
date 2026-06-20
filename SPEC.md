@@ -119,8 +119,10 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        failsafe freeze + a *would-notify* message (surfaced as an attribute, not yet delivered);
        before the first reading it waits. Entity availability now follows the thermostat being
        reachable (not sensor freshness) so the failsafe/status stays visible. Still no writes. (#10)
-     - 5d-3. ⬜ Durable persistence (`Store`/`RestoreEntity`) for learned offset + last target/change
-       so the learned bias survives restarts before it drives anything. Still no writes.
+     - 5d-3. ✅ Durable persistence — coordinator-held control state (learned offset, target,
+       last target/change) saved to a `helpers.storage.Store` (debounced) and restored before the
+       first refresh, so the slow-EMA bias survives restarts. Restoring the target also avoids a
+       restart re-seed and a spurious feedforward. Still no thermostat writes. (#11)
      - 5d-4. ⬜ The flip — settable target (resolve single-vs-range HA modeling, verify against
        Versatile Thermostat's `over_climate`) + real `climate.set_temperature` + master kill switch.
        Advisor consult before building (first real writes).

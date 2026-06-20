@@ -30,7 +30,8 @@ from homeassistant.components.climate import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import convert
 from homeassistant.util import dt as dt_util
@@ -44,6 +45,11 @@ _UPDATE_INTERVAL = timedelta(seconds=60)
 # Status strings for the cases where decide() doesn't run (it owns its own reasons otherwise).
 _STATUS_NO_BAND = "no_thermostat_band"
 _STATUS_WAITING = "waiting_for_first_reading"
+
+# Persistence: the learned offset converges via a slow EMA, so it's expensive to relearn after a
+# restart. Debounced writes batch the per-tick offset nudges to roughly one disk write per delay.
+_STORE_VERSION = 1
+_SAVE_DELAY_S = 600.0
 
 
 def house_average(temps: list[float]) -> float | None:
@@ -142,11 +148,43 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         # system unit and correct for the actual equipment — so the defaults here are just a base.
         self._config = ControllerConfig()
 
-        # Shadow control state (in-memory; durable persistence lands with actuation).
+        # Control state — restored from disk in async_load_state(), then kept in memory and saved
+        # back (debounced) as it evolves. Persisting it means the learned bias and target survive
+        # restarts instead of relearning from scratch.
+        self._store = Store[dict[str, float | None]](
+            hass, _STORE_VERSION, f"{DOMAIN}.{entry.entry_id}"
+        )
         self._target: float | None = None
         self._last_target: float | None = None
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
+
+    async def async_load_state(self) -> None:
+        """Restore persisted control state before the first refresh.
+
+        Restoring ``target`` means we don't re-seed it to the current house average on restart, and
+        restoring ``last_target`` avoids a spurious feedforward jump on the first post-restart tick.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        self._learned_offset = stored.get("learned_offset") or 0.0
+        self._target = stored.get("target")
+        self._last_target = stored.get("last_target")
+        self._last_change_ts = stored.get("last_change_ts") or 0.0
+
+    @callback
+    def _persisted_state(self) -> dict[str, float | None]:
+        return {
+            "learned_offset": self._learned_offset,
+            "target": self._target,
+            "last_target": self._last_target,
+            "last_change_ts": self._last_change_ts,
+        }
+
+    def _save_state(self) -> None:
+        """Debounced write of the control state to disk (the ``.storage`` file, not the thermostat)."""
+        self._store.async_delay_save(self._persisted_state, _SAVE_DELAY_S)
 
     def _read_sensors(self) -> tuple[float | None, int]:
         """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
@@ -224,9 +262,11 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         """
         # Seed the target to the current operating point so the within-deadband learning branch runs
         # from the first tick (the actual user-settable target arrives with actuation).
+        changed = False
         if available and self._target is None:
             self._target = house_avg
             self._last_target = house_avg
+            changed = True
 
         config = replace(self._config, temp_min=wrapped.temp_min, temp_max=wrapped.temp_max)
         now_ts = dt_util.utcnow().timestamp()
@@ -246,9 +286,13 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         )
         if action.new_offset is not None:
             self._learned_offset = action.new_offset
+            changed = True
         if action.set_band:
             self._last_change_ts = now_ts
+            changed = True
         self._last_target = self._target
+        if changed:
+            self._save_state()
         return action
 
     async def _async_update_data(self) -> CoordinatorData:

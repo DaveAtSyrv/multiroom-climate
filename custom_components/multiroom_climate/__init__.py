@@ -20,6 +20,7 @@ _PLATFORMS = [Platform.CLIMATE]
 async def async_setup_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> bool:
     """Set up Multiroom Climate from a config entry."""
     coordinator = MultiroomClimateCoordinator(hass, entry)
+    await coordinator.async_load_state()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
