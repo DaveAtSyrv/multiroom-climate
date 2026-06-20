@@ -20,6 +20,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import convert
 
 from .const import CONF_CLIMATE_ENTITY, CONF_TARGET_SENSORS, DOMAIN
 
@@ -43,23 +44,15 @@ def _to_hvac_mode(value: str) -> HVACMode | None:
         return None
 
 
-def _as_float(value: object) -> float | None:
-    """Coerce a state attribute to a float, or None if it's missing/non-numeric."""
-    if value is None:
-        return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
 @dataclass(frozen=True)
 class CoordinatorData:
     """The regulated view computed each tick: the house average + the wrapped thermostat's state.
 
     ``band_low``/``band_high`` are the wrapped thermostat's current AUTO setpoints — the band the
     controller will slide once actuation lands. Surfaced now (read-only) so the band can be watched
-    alongside the house average before any writes happen.
+    alongside the house average before any writes happen. They are ``None`` in single-setpoint modes
+    (heat/cool) or when the thermostat is gone, so actuation must skip ``decide()`` when either is
+    ``None`` rather than assume a band exists.
     """
 
     house_average: float | None
@@ -114,8 +107,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 )
                 if mode is not None
             )
-            band_low = _as_float(wrapped.attributes.get(ATTR_TARGET_TEMP_LOW))
-            band_high = _as_float(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH))
+            band_low = convert(wrapped.attributes.get(ATTR_TARGET_TEMP_LOW), float)
+            band_high = convert(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH), float)
 
         return CoordinatorData(
             house_average=house_average(temps),
