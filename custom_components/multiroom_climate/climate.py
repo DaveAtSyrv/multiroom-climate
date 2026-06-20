@@ -89,6 +89,27 @@ class MultiroomClimateEntity(
             await self.coordinator.async_set_target(target)
 
     @property
+    def min_temp(self) -> float:
+        """Bound the house-target dial by the wrapped thermostat's range (else the HA default)."""
+        if (temp_min := self.coordinator.data.temp_min) is not None:
+            return temp_min
+        return super().min_temp
+
+    @property
+    def max_temp(self) -> float:
+        """Bound the house-target dial by the wrapped thermostat's range (else the HA default)."""
+        if (temp_max := self.coordinator.data.temp_max) is not None:
+            return temp_max
+        return super().max_temp
+
+    @property
+    def target_temperature_step(self) -> float | None:
+        """Match the wrapped thermostat's step so the house-target dial isn't absurdly fine."""
+        if (step := self.coordinator.data.target_temp_step) is not None:
+            return step
+        return super().target_temperature_step
+
+    @property
     def hvac_mode(self) -> HVACMode | None:
         """Mirror the wrapped thermostat's current mode."""
         return self.coordinator.data.hvac_mode
