@@ -15,6 +15,9 @@
         }
       }
     },
+    "error": {
+      "no_sensors": "Select at least one target temperature sensor."
+    },
     "abort": {
       "already_configured": "This thermostat is already controlled by a Multiroom Climate entry."
     }

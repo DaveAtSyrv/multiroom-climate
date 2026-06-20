@@ -40,10 +40,15 @@ class MultiroomClimateConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            # One controller per wrapped thermostat — keying on it prevents duplicate setups.
-            await self.async_set_unique_id(user_input[CONF_CLIMATE_ENTITY])
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
+            if not user_input[CONF_TARGET_SENSORS]:
+                # Required enforces presence, not non-emptiness; an empty average is meaningless.
+                errors[CONF_TARGET_SENSORS] = "no_sensors"
+            else:
+                # One controller per wrapped thermostat — keying on it prevents duplicate setups.
+                await self.async_set_unique_id(user_input[CONF_CLIMATE_ENTITY])
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
 
-        return self.async_show_form(step_id="user", data_schema=_USER_SCHEMA)
+        return self.async_show_form(step_id="user", data_schema=_USER_SCHEMA, errors=errors)
