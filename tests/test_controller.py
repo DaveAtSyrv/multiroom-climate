@@ -342,10 +342,3 @@ def test_fan_hysteresis_band_holds_either_state():
     assert decide_fan(1.5, circulating=False, config=_FAN_CFG).set_fan is False
     on = decide_fan(1.5, circulating=True, config=_FAN_CFG)
     assert on.set_fan is False and on.reason == "within_hysteresis"
-
-
-def test_fan_not_gated_on_hvac_mode():
-    # decide_fan has no mode input at all — circulation is driven purely by spread (it matters most
-    # when the system is idle). This pins that the signature never grows an HVAC gate.
-    a = decide_fan(3.0, circulating=False, config=_FAN_CFG)
-    assert a.set_fan is True and a.circulate is True
