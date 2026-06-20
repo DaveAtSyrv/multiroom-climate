@@ -9,6 +9,7 @@ from pytest_homeassistant_custom_component.common import (
     mock_restore_cache,
 )
 
+from custom_components.multiroom_climate import switch as switch_platform
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
     CONF_TARGET_SENSORS,
@@ -81,3 +82,8 @@ async def test_switch_restores_enabled_state(
 
     assert hass.states.get(_SWITCH_ID).state == STATE_ON
     assert entry.runtime_data.enabled is True
+
+
+def test_parallel_updates_zero_for_coordinator_platform() -> None:
+    # Toggling only flips an in-memory flag; the coordinator owns all I/O. Pin the quality-bar value.
+    assert switch_platform.PARALLEL_UPDATES == 0
