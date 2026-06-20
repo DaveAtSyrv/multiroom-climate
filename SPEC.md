@@ -96,15 +96,23 @@ hacs.json · LICENSE (MIT) · README.md · brand/ icons (coined mark, not Daikin
 
 Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
 
-1. Integration skeleton (manifest, `__init__`, const, CI) — *makes hassfest/HACS-validate run.*
-2. **`controller.py` + `test_controller.py`** — the pure engine (offset learn, band-shift, trim,
-   feedforward, failsafe). Highest value, fully unit-testable, no HA needed.
-3. `config_flow.py` + `OptionsFlow` + strings/translations.
-4. `coordinator.py` (read wrapped climate + sensors).
-5. `climate.py` (the entity; wires coordinator → controller → `climate.set_temperature`).
-6. Humidity bias + fan-circulate layers.
-7. Optimal-start + day/night setback wiring.
-8. Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
+1. ✅ Integration skeleton (manifest, `__init__`, const, CI) — *makes hassfest/HACS-validate run.* (#1)
+2. ✅ **`controller.py` + `test_controller.py`** — the pure engine (offset learn, band-shift, trim,
+   feedforward, failsafe). Highest value, fully unit-testable, no HA needed. (#3, #4)
+3. ✅ `config_flow.py` + strings/translations. (`OptionsFlow` deferred to a later PR.) (#5)
+4. ✅ `coordinator.py` (read sensors → weighted house average + mirror wrapped HVAC mode). (#6)
+5. `climate.py` — landed as small CLs to keep actuation honest (no confusing no-op half-states):
+   - 5a. ✅ Read-only observe layer: `current_temperature` = house avg, mirror wrapped HVAC mode,
+     no writes / no setpoint features. (#6)
+   - 5b. ✅ Coordinator reads the wrapped AUTO band (`target_temp_low`/`high`); entity exposes it as
+     diagnostic attributes. Still read-only. (#7)
+   - 5c. ⬜ **NEXT:** shadow mode — run `controller.decide()` each tick against the live inputs and
+     expose the *proposed* band/offset as attributes, but still write nothing.
+   - 5d. ⬜ Actuate: flip shadow → real `climate.set_temperature`; add `RestoreEntity`/`Store` for the
+     learned offset + last target, settable target, and the master enable/kill switch.
+6. ⬜ Humidity bias + fan-circulate layers.
+7. ⬜ Optimal-start + day/night setback wiring.
+8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
    default store. (v2: direct Skyport API + reauth.)
 
 ## 7. Quality bar

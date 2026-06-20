@@ -98,3 +98,32 @@ async def test_wrapped_missing_yields_no_mode(hass: HomeAssistant) -> None:
 
     assert data.hvac_mode is None
     assert data.hvac_modes == ()
+    assert data.band_low is None
+    assert data.band_high is None
+
+
+async def test_reads_wrapped_band_setpoints(hass: HomeAssistant) -> None:
+    hass.states.async_set("sensor.a", "20.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {"hvac_modes": ["off", "heat_cool"], "target_temp_low": 19.5, "target_temp_high": 23.0},
+    )
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.band_low == 19.5
+    assert data.band_high == 23.0
+
+
+async def test_band_none_when_setpoints_absent(hass: HomeAssistant) -> None:
+    # A single-setpoint mode (heat/cool) advertises no AUTO band — band stays None, not a crash.
+    hass.states.async_set("sensor.a", "20.0")
+    hass.states.async_set("climate.daikin", "heat", {"hvac_modes": ["off", "heat"]})
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.band_low is None
+    assert data.band_high is None

@@ -67,3 +67,13 @@ class MultiroomClimateEntity(
     def hvac_modes(self) -> list[HVACMode]:
         """Mirror the modes the wrapped thermostat advertises."""
         return list(self.coordinator.data.hvac_modes)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, float | None]:
+        """Surface the wrapped thermostat's current AUTO band for observability.
+
+        This is the band the controller will slide once actuation lands; exposing it now lets the
+        band be watched next to ``current_temperature`` (the house average) before any writes.
+        """
+        data = self.coordinator.data
+        return {"band_low": data.band_low, "band_high": data.band_high}

@@ -53,6 +53,25 @@ async def test_reports_house_average_and_mirrors_mode(
     assert hass.states.get("climate.daikin").state == "heat_cool"
 
 
+async def test_exposes_wrapped_band_as_attributes(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    hass.states.async_set("sensor.living_room", "20.0")
+    hass.states.async_set("sensor.kitchen", "24.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {"hvac_modes": ["off", "heat_cool"], "target_temp_low": 19.0, "target_temp_high": 23.0},
+    )
+
+    entity_id = await _setup(hass)
+    state = hass.states.get(entity_id)
+
+    assert state is not None
+    assert state.attributes["band_low"] == 19.0
+    assert state.attributes["band_high"] == 23.0
+
+
 async def test_reports_in_system_unit(
     hass: HomeAssistant, enable_custom_integrations
 ) -> None:
