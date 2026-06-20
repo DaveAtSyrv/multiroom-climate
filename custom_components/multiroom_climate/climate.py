@@ -69,11 +69,22 @@ class MultiroomClimateEntity(
         return list(self.coordinator.data.hvac_modes)
 
     @property
-    def extra_state_attributes(self) -> dict[str, float | None]:
-        """Surface the wrapped thermostat's current AUTO band for observability.
+    def extra_state_attributes(self) -> dict[str, float | str | None]:
+        """Surface the wrapped band and the controller's shadow decision for observability.
 
-        This is the band the controller will slide once actuation lands; exposing it now lets the
-        band be watched next to ``current_temperature`` (the house average) before any writes.
+        ``band_low``/``band_high`` are the thermostat's current AUTO band. The ``shadow_*`` keys are
+        what the controller *would* do this tick (target it's holding, learned bias offset, and the
+        band it would propose) — nothing is written to the thermostat yet.
         """
         data = self.coordinator.data
-        return {"band_low": data.band_low, "band_high": data.band_high}
+        attrs: dict[str, float | str | None] = {
+            "band_low": data.band_low,
+            "band_high": data.band_high,
+            "shadow_target": data.target,
+            "shadow_learned_offset": round(data.learned_offset, 2),
+        }
+        if data.proposed is not None:
+            attrs["shadow_action"] = data.proposed.reason
+            attrs["shadow_proposed_band_low"] = data.proposed.band_low
+            attrs["shadow_proposed_band_high"] = data.proposed.band_high
+        return attrs

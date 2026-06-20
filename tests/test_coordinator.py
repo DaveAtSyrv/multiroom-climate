@@ -7,8 +7,10 @@ non-numeric / unknown HVAC mode" behaviour is covered end to end.
 
 from __future__ import annotations
 
+import pytest
 from homeassistant.components.climate import HVACMode
 from homeassistant.core import HomeAssistant
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.multiroom_climate.const import (
@@ -127,3 +129,57 @@ async def test_band_none_when_setpoints_absent(hass: HomeAssistant) -> None:
 
     assert data.band_low is None
     assert data.band_high is None
+
+
+def _heat_cool(low: float, high: float) -> tuple[str, dict]:
+    return "heat_cool", {"hvac_modes": ["off", "heat_cool"], "target_temp_low": low, "target_temp_high": high}
+
+
+async def test_shadow_seeds_target_and_learns_offset_when_settled(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    # Target seeds to the current house average; error 0 → within deadband → learn, propose nothing.
+    assert data.target == 70.0
+    assert data.proposed is not None
+    assert data.proposed.reason == "within_deadband"
+    assert data.proposed.set_band is False
+    # band_center 68 − house 70 = −2; EMA from 0 with alpha 0.05 → −0.1.
+    assert data.learned_offset == pytest.approx(-0.1)
+
+
+async def test_shadow_proposes_trim_when_house_drifts(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # tick 1 seeds target = 70
+    hass.states.async_set("sensor.a", "66.0")  # house drops well below target
+    data = await coordinator._async_update_data()  # tick 2
+
+    assert data.target == 70.0
+    assert data.proposed is not None
+    assert data.proposed.reason == "trim"
+    assert data.proposed.set_band is True
+    # error 70−66 = 4; step clamp(0.3*4, −0.5, 0.5) = 0.5; band shifts +0.5 (in °F bounds).
+    assert data.proposed.band_low == pytest.approx(67.5)
+    assert data.proposed.band_high == pytest.approx(69.5)
+
+
+async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", "heat", {"hvac_modes": ["off", "heat"]})
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    # No AUTO band → decide() can't run → no proposal, target/offset untouched.
+    assert data.proposed is None
+    assert data.target is None
+    assert data.learned_offset == 0.0
