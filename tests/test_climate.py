@@ -250,3 +250,35 @@ async def test_entities_grouped_under_one_device(
     switch_dev = registry.async_get("switch.downstairs_control").device_id
     assert climate_dev is not None
     assert climate_dev == switch_dev
+
+
+async def test_surfaces_failsafe_notify(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.living_room", "70.0")
+    hass.states.async_set("sensor.kitchen", "70.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {
+            "hvac_modes": ["off", "heat_cool"],
+            "target_temp_low": 67.0,
+            "target_temp_high": 69.0,
+            "min_temp": 45.0,
+            "max_temp": 95.0,
+        },
+    )
+    entity_id = await _setup(hass)  # first tick seeds the target
+
+    # Lose every sensor → the next tick fails safe, and the entity surfaces the notify message.
+    hass.states.async_set("sensor.living_room", "unavailable")
+    hass.states.async_set("sensor.kitchen", "unavailable")
+    coordinator = hass.config_entries.async_entries(DOMAIN)[0].runtime_data
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["shadow_status"] == "failsafe"
+    assert "shadow_notify" in state.attributes
