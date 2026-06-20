@@ -127,6 +127,13 @@ def test_feedforward_bypasses_rate_limit():
     assert a.set_band is True and a.reason == "feedforward"
 
 
+def test_feedforward_refused_at_temp_bound_holds():
+    # Target beyond equipment range with the band already at the upper bound: the jump clamps to 0
+    # and we hold rather than write garbage. (Moot in practice — the target is unreachable — but pinned.)
+    a = decide(_inputs(target=40.0, last_target=21.0, band_low=33.0, band_high=35.0), CFG)
+    assert a.set_band is False and a.reason == "at_temp_bound"
+
+
 # --- offset learning -------------------------------------------------------
 
 def test_offset_learned_only_when_settled():
@@ -184,8 +191,9 @@ def _simulate(target_per_tick: list[float], use_feedforward: bool, start_house: 
         if action.new_offset is not None:
             learned_offset = action.new_offset
         last_target = target  # coordinator advances last_target each tick
-        house += _PLANT_GAIN * (((band_low + band_high) / 2.0 - _BIAS) - house)
-        out.append(_Rec(target, house, (band_low + band_high) / 2.0, learned_offset, action.reason))
+        band_center = (band_low + band_high) / 2.0
+        house += _PLANT_GAIN * ((band_center - _BIAS) - house)
+        out.append(_Rec(target, house, band_center, learned_offset, action.reason))
     return out
 
 
