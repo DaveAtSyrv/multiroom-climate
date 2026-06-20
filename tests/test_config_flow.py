@@ -6,6 +6,8 @@ These request ``enable_custom_integrations`` explicitly (rather than an autouse 
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
@@ -184,3 +186,88 @@ async def test_options_change_reloads_coordinator(
     # The update listener reloaded the entry; the rebuilt coordinator carries the saved schedule.
     assert entry.runtime_data._config.day_temp == 70.0
     assert entry.runtime_data._config.day_start_min == 360.0
+
+
+# --- reconfigure flow (change averaged sensors / humidity; thermostat stays fixed) -----------
+
+async def _start_reconfigure(hass: HomeAssistant, entry: MockConfigEntry):
+    return await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+    )
+
+
+async def test_reconfigure_updates_sensors(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="climate.daikin", data=_USER_INPUT)
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    new_sensors = ["sensor.living_room_temperature", "sensor.bedroom_temperature"]
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_TARGET_SENSORS: new_sensors}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_TARGET_SENSORS] == new_sensors
+    # The wrapped thermostat (identity) is untouched.
+    assert entry.data[CONF_CLIMATE_ENTITY] == "climate.daikin"
+
+
+async def test_reconfigure_clears_omitted_humidity_sensor(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="climate.daikin",
+        data={**_USER_INPUT, CONF_HUMIDITY_SENSOR: "sensor.hallway_humidity"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_TARGET_SENSORS: _USER_INPUT[CONF_TARGET_SENSORS]}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    # Full-dict rebuild (not a merge) means an omitted optional sensor is cleared.
+    assert CONF_HUMIDITY_SENSOR not in entry.data
+
+
+async def test_reconfigure_empty_sensors_shows_error(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="climate.daikin", data=_USER_INPUT)
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_TARGET_SENSORS: []}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_TARGET_SENSORS: "no_sensors"}
+
+
+async def test_reconfigure_triggers_single_reload(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # The data update fires the existing update listener (one reload); using
+    # async_update_reload_and_abort would reload twice.
+    hass.states.async_set("climate.daikin", "heat_cool", {"hvac_modes": ["off", "heat_cool"]})
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="climate.daikin", data=_USER_INPUT)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await _start_reconfigure(hass, entry)
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_TARGET_SENSORS: ["sensor.living_room_temperature"]},
+        )
+        await hass.async_block_till_done()
+
+    assert reload.call_count == 1

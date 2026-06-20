@@ -48,23 +48,31 @@ def _minutes_to_time(minutes: float) -> str:
     hours, mins = divmod(int(minutes), 60)
     return f"{hours:02d}:{mins:02d}:00"
 
+# Sensor fields shared by the initial flow and the reconfigure flow (reconfigure can change the
+# averaged sensors / humidity sensor; the wrapped thermostat is the entry's identity and stays fixed).
+_SENSOR_FIELDS = {
+    vol.Required(CONF_TARGET_SENSORS): selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            domain="sensor", device_class="temperature", multiple=True
+        ),
+    ),
+    # Optional: one RH sensor. When set, cooling overcools while humid (see controller._overcool).
+    vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class="humidity"),
+    ),
+}
+
 _USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME, default="Multiroom Climate"): str,
         vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="climate"),
         ),
-        vol.Required(CONF_TARGET_SENSORS): selector.EntitySelector(
-            selector.EntitySelectorConfig(
-                domain="sensor", device_class="temperature", multiple=True
-            ),
-        ),
-        # Optional: one RH sensor. When set, cooling overcools while humid (see controller._overcool).
-        vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor", device_class="humidity"),
-        ),
+        **_SENSOR_FIELDS,
     }
 )
+
+_RECONFIGURE_SCHEMA = vol.Schema(_SENSOR_FIELDS)
 
 
 class MultiroomClimateConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -94,6 +102,47 @@ class MultiroomClimateConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
 
         return self.async_show_form(step_id="user", data_schema=_USER_SCHEMA, errors=errors)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the averaged sensors / humidity sensor on an existing entry.
+
+        The wrapped thermostat is the entry's identity (and the learned offset is specific to it), so
+        it stays fixed — wrap a different thermostat by adding a new entry. The learned offset and the
+        rest of the persisted control state are kept; the slow EMA re-converges to the new average.
+        """
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input[CONF_TARGET_SENSORS]:
+                errors[CONF_TARGET_SENSORS] = "no_sensors"
+            else:
+                # Rebuild the full data dict (not a merge) so an omitted humidity sensor is *cleared*.
+                # The thermostat/name are preserved; only the sensor fields change.
+                new_data = {
+                    CONF_NAME: entry.data[CONF_NAME],
+                    CONF_CLIMATE_ENTITY: entry.data[CONF_CLIMATE_ENTITY],
+                    CONF_TARGET_SENSORS: user_input[CONF_TARGET_SENSORS],
+                }
+                if user_input.get(CONF_HUMIDITY_SENSOR):
+                    new_data[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+                # Update the entry and let the options/data update listener do the single reload
+                # (calling async_update_reload_and_abort here would reload twice — see __init__).
+                self.hass.config_entries.async_update_entry(entry, data=new_data)
+                return self.async_abort(reason="reconfigure_successful")
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                _RECONFIGURE_SCHEMA,
+                {
+                    CONF_TARGET_SENSORS: entry.data[CONF_TARGET_SENSORS],
+                    CONF_HUMIDITY_SENSOR: entry.data.get(CONF_HUMIDITY_SENSOR),
+                },
+            ),
+            errors=errors,
+        )
 
 
 def _schedule_schema(unit: str, options: dict[str, Any]) -> vol.Schema:
