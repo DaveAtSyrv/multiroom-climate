@@ -130,7 +130,9 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        the wrapped band is the actuation interface, so our entity stays `supported_features = 0`. (#12)
      - 5d-4b. ⬜ **NEXT:** user-settable target — give the entity its own `target_temperature`
        (resolve single-vs-range HA modeling: verify `HEAT_COOL` + single setpoint against Versatile
-       Thermostat's `over_climate` + a harness test) wired to the same coordinator target.
+       Thermostat's `over_climate` + a harness test) wired to the same coordinator target. Must also
+       teach `set_enabled(reseed=True)` to *not* wipe a user-set target on re-enable (today it nulls
+       the seeded target; once the user picks one, re-enable should keep it).
 6. ⬜ Humidity bias + fan-circulate layers.
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS

@@ -30,7 +30,6 @@ async def async_setup_entry(
 class MultiroomEnableSwitch(RestoreEntity, SwitchEntity):
     """Turns the coordinator's actuation on/off and restores its last state across restarts."""
 
-    _attr_entity_category = None
     _attr_icon = "mdi:thermostat-auto"
 
     def __init__(

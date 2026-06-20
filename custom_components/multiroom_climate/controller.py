@@ -30,9 +30,10 @@ unchanged" — so a missed return path degrades to "didn't learn", never "wiped 
 
 Scope boundary: this engine answers "given that we are controlling, what band next?" It deliberately
 does **not** own the master enable / kill switch. Whether to call ``decide()`` at all, and the
-OFF→manual handback (restoring the user's setpoint so the thermostat takes over), are the
-coordinator's responsibility — ``decide()`` returning ``set_band=False`` only ever means "hold", which
-is not the same as "return to manual".
+OFF→manual handback (stop writing and leave the band where it is — already bias-compensated for
+current conditions — so the thermostat resumes direct manual control), are the coordinator's
+responsibility. ``decide()`` returning ``set_band=False`` only ever means "hold", which is not the
+same as the coordinator's handback.
 """
 
 from __future__ import annotations
