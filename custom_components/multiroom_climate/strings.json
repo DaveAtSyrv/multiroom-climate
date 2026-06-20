@@ -15,13 +15,26 @@
           "target_sensors": "The room sensors whose weighted average is the temperature to hold.",
           "humidity_sensor": "Optional. When set, cooling overcools slightly while humidity is above target to wring out moisture."
         }
+      },
+      "reconfigure": {
+        "title": "Change sensors",
+        "description": "Update the averaged room sensors or the humidity sensor. The wrapped thermostat can't be changed here — add a new entry to control a different one. Learned calibration is kept.",
+        "data": {
+          "target_sensors": "[%key:component::multiroom_climate::config::step::user::data::target_sensors%]",
+          "humidity_sensor": "[%key:component::multiroom_climate::config::step::user::data::humidity_sensor%]"
+        },
+        "data_description": {
+          "target_sensors": "[%key:component::multiroom_climate::config::step::user::data_description::target_sensors%]",
+          "humidity_sensor": "[%key:component::multiroom_climate::config::step::user::data_description::humidity_sensor%]"
+        }
       }
     },
     "error": {
       "no_sensors": "Select at least one target temperature sensor."
     },
     "abort": {
-      "already_configured": "This thermostat is already controlled by a Multiroom Climate entry."
+      "already_configured": "This thermostat is already controlled by a Multiroom Climate entry.",
+      "reconfigure_successful": "Sensors updated."
     }
   },
   "options": {

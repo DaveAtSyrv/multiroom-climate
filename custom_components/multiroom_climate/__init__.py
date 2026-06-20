@@ -25,14 +25,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) ->
     await coordinator.async_load_state()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
-    # Reload on options change so a new schedule is picked up (config is read in the coordinator ctor).
+    # Reload on any entry update (schedule options or reconfigured sensors) — config is read in the
+    # coordinator ctor, so a single reload rebuilds it. Reconfigure relies on this instead of
+    # async_update_reload_and_abort to avoid a double reload.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     return True
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: MultiroomConfigEntry) -> None:
-    """Reload the entry when its options change so the coordinator rebuilds its config."""
+    """Reload the entry on any update (options *or* reconfigured data) so the coordinator rebuilds."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
