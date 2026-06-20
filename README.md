@@ -25,6 +25,59 @@ manual "set it to 67 to hold the house at 70" trick becomes automatic and self-a
 - **Stale-sensor failsafe** + a **master enable** toggle that instantly hands control back to the
   thermostat.
 
+## Installation
+
+### HACS (custom repository)
+
+1. In HACS, open the **⋮** menu → **Custom repositories**.
+2. Add `https://github.com/DaveAtSyrv/multiroom-climate` with category **Integration**.
+3. Install **Multiroom Climate**, then restart Home Assistant.
+
+### Manual
+
+Copy `custom_components/multiroom_climate` into your Home Assistant `config/custom_components/`
+directory and restart.
+
+## Setup
+
+1. **Settings → Devices & Services → Add Integration → Multiroom Climate.**
+2. Choose:
+   - **Thermostat to control** — the `climate.*` entity to drive (kept in its AUTO band).
+   - **Target temperature sensors** — the room sensors whose weighted average is the temperature to
+     hold (pick one or more).
+   - **Humidity sensor** *(optional)* — enables a slight cooling-season overcool while humidity is
+     above target.
+
+This creates two entities: a **climate** entity (named after the integration) that shows the house
+average with a single settable target, and a **master enable switch** (`<name> control`) that is
+**off by default**. The integration only observes until you turn the switch on — a fresh install
+never touches your thermostat unexpectedly.
+
+## Day/night schedule (options)
+
+Open **Settings → Devices & Services → Multiroom Climate → Configure** to set an optional setback
+schedule:
+
+- **Use the day/night schedule** — the master toggle for the schedule.
+- **Day / Night temperature** — the two setpoints, in your system's unit.
+- **Day / Night start times** — when each period begins.
+- **Optimal-start lead** — how many minutes early to begin each transition so the home reaches the
+  new setpoint *by* the scheduled time.
+
+Enabling a schedule takes effect at the next day↔night transition; a mid-period change won't override
+a manual hold until then.
+
+## Usage
+
+- **Turn on the master switch** to let the integration regulate. On first enable (or whenever you
+  haven't set a target yourself) it seeds the target to the current house average ("hold where we are
+  now"); a target you've set explicitly is kept across an off→on toggle. It slides the thermostat's
+  band from there.
+- **Set the target** on the climate entity to the house temperature you want.
+- **Turn the switch off** at any time to instantly hand full control back to the thermostat.
+- Diagnostic `shadow_*` attributes on the climate entity expose what the controller is doing (target,
+  learned offset, sensor freshness, proposed band, scheduled setpoint) — handy while tuning.
+
 ## Status
 
 Early development. See [SPEC.md](SPEC.md) for the full design and roadmap.
