@@ -861,3 +861,29 @@ def test_last_scheduled_round_trips_through_persisted_state(hass: HomeAssistant)
     coordinator = _make_coordinator(hass, ["sensor.a"])
     coordinator._last_scheduled = 64.0
     assert coordinator._persisted_state()["last_scheduled"] == 64.0
+
+
+async def test_failed_fan_write_is_swallowed(hass: HomeAssistant) -> None:
+    # A fan-mode write that raises must be logged and swallowed, not break the coordinator update.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")  # spread 6 → circulate
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto"))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+    coordinator.set_enabled(True)
+
+    calls: list[ServiceCall] = []
+
+    async def _boom(call: ServiceCall) -> None:
+        calls.append(call)
+        raise HomeAssistantError("fan offline")
+
+    hass.services.async_register("climate", "set_fan_mode", _boom)
+
+    data = await coordinator._async_update_data()  # must not raise
+
+    # The write was actually attempted (not just proposed)...
+    assert len(calls) == 1
+    assert calls[0].data["fan_mode"] == "on"
+    # ...and the raised error was swallowed, so the tick still completed.
+    assert data.fan_blocked is None

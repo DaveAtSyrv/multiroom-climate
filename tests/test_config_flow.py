@@ -271,3 +271,21 @@ async def test_reconfigure_triggers_single_reload(
         await hass.async_block_till_done()
 
     assert reload.call_count == 1
+
+
+async def test_reconfigure_sets_humidity_sensor(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="climate.daikin", data=_USER_INPUT)
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_TARGET_SENSORS: _USER_INPUT[CONF_TARGET_SENSORS],
+            CONF_HUMIDITY_SENSOR: "sensor.hallway_humidity",
+        },
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.data[CONF_HUMIDITY_SENSOR] == "sensor.hallway_humidity"
