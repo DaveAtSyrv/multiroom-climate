@@ -104,6 +104,11 @@ class _WrappedReading:
         """Whether decide() can run: a full AUTO band plus the equipment's temp bounds to clamp to."""
         return None not in (self.band_low, self.band_high, self.temp_min, self.temp_max)
 
+    @property
+    def is_cooling(self) -> bool:
+        """Whether the current mode is cooling-capable (COOL/HEAT_COOL) — gates humidity overcool."""
+        return self.hvac_mode in (HVACMode.COOL, HVACMode.HEAT_COOL)
+
 
 # The "thermostat missing/unavailable" reading — shareable because the dataclass is frozen.
 _NO_READING = _WrappedReading(
@@ -330,6 +335,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 last_change_ts=self._last_change_ts,
                 learned_offset=self._learned_offset,
                 last_target=self._last_target,
+                # Humidity overcool is mode-gated; wire the cooling flag now (humidity sensor lands in
+                # 6b, so RH is None for now — the gate is exercised but applies no offset yet).
+                humidity=None,
+                cooling=wrapped.is_cooling,
             ),
             config,
         )
