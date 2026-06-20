@@ -1,10 +1,10 @@
 """Config flow for Multiroom Climate.
 
 Minimal "get it installed" flow: pick the thermostat to wrap, the target temperature sensors, and
-(optionally) a humidity sensor to enable cooling-season overcool. The first options-flow surface lands
-the day/night schedule here (temps + start times + optimal-start lead); remaining tunables (gains,
-humidity tuning, fan) follow in later PRs. The integration is designed to work out of the box from
-just the thermostat + at least one temperature sensor — the schedule is opt-in.
+(optionally) a humidity sensor to enable cooling-season overcool. An options flow covers the day/night
+schedule (temps + start times + optimal-start lead); the other tunables (gains, humidity, fan) stay on
+sensible defaults in v1. The integration is designed to work out of the box from just the thermostat +
+at least one temperature sensor — the schedule is opt-in.
 """
 
 from __future__ import annotations

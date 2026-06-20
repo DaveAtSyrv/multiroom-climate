@@ -95,7 +95,7 @@ class ControllerConfig:
     """Night (setback) period start, minutes since local midnight (default 22:00)."""
 
     day_temp: float = 21.0
-    """Target held during the day period (caller's unit). Placeholder until a schedule is configured."""
+    """Target held during the day period (caller's unit); set via the schedule options flow."""
 
     night_temp: float = 18.0
     """Target held during the night setback (caller's unit)."""
