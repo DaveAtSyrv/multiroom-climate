@@ -106,10 +106,12 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
      no writes / no setpoint features. (#6)
    - 5b. ✅ Coordinator reads the wrapped AUTO band (`target_temp_low`/`high`); entity exposes it as
      diagnostic attributes. Still read-only. (#7)
-   - 5c. ⬜ **NEXT:** shadow mode — run `controller.decide()` each tick against the live inputs and
-     expose the *proposed* band/offset as attributes, but still write nothing.
-   - 5d. ⬜ Actuate: flip shadow → real `climate.set_temperature`; add `RestoreEntity`/`Store` for the
-     learned offset + last target, settable target, and the master enable/kill switch.
+   - 5c. ✅ Shadow mode — coordinator runs `controller.decide()` each tick against the live inputs
+     (stateful: learned offset, last target/change, all in-memory) and exposes the *proposed*
+     band + learned offset + target as `shadow_*` attributes. Writes nothing. (#8)
+   - 5d. ⬜ **NEXT:** actuate — flip shadow → real `climate.set_temperature`; add `RestoreEntity`/
+     `Store` for the learned offset + last target, a settable target (resolve single-vs-range HA
+     modeling — verify against Versatile Thermostat's `over_climate`), and the master kill switch.
 6. ⬜ Humidity bias + fan-circulate layers.
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS

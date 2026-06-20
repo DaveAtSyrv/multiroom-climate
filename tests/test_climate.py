@@ -72,6 +72,29 @@ async def test_exposes_wrapped_band_as_attributes(
     assert state.attributes["band_high"] == 23.0
 
 
+async def test_exposes_shadow_decision_attributes(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.living_room", "70.0")
+    hass.states.async_set("sensor.kitchen", "70.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {"hvac_modes": ["off", "heat_cool"], "target_temp_low": 67.0, "target_temp_high": 69.0},
+    )
+
+    entity_id = await _setup(hass)
+    state = hass.states.get(entity_id)
+
+    assert state is not None
+    # Shadow outputs are surfaced for observability; nothing is written to the thermostat.
+    assert state.attributes["shadow_target"] == 70.0
+    assert state.attributes["shadow_action"] == "within_deadband"
+    assert "shadow_learned_offset" in state.attributes
+    assert hass.states.get("climate.daikin").state == "heat_cool"
+
+
 async def test_reports_in_system_unit(
     hass: HomeAssistant, enable_custom_integrations
 ) -> None:
