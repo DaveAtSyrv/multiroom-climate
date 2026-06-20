@@ -330,6 +330,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 last_change_ts=self._last_change_ts,
                 learned_offset=self._learned_offset,
                 last_target=self._last_target,
+                # Humidity overcool is mode-gated; wire the cooling flag now (humidity sensor lands in
+                # 6b, so RH is None for now — the gate is exercised but applies no offset yet).
+                humidity=None,
+                cooling=wrapped.hvac_mode in (HVACMode.COOL, HVACMode.HEAT_COOL),
             ),
             config,
         )

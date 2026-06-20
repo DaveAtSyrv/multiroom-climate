@@ -67,8 +67,14 @@ decides heat vs cool.
    slow ~12-min / 0.5°F trim. Modulating equipment ⇒ no short-cycle risk.
 5. **Optimal start:** begin scheduled moves early by a fixed lead so the house is at temp *by* the
    scheduled time.
-6. **Humidity bias:** in cooling season, while RH > target, subtract a bounded humidity term from the
-   cool target (overcool); release as RH falls.
+6. **Humidity bias:** while cooling and RH > target, subtract a bounded humidity term (`gain × excess`,
+   capped) from the **effective target** — i.e. lower the *whole* regulation point a touch, not just the
+   cool setpoint, so the band-shift loop holds the house slightly below target until the air dries; release
+   as RH falls. **Gated on the HVAC mode being cooling-capable (COOL/HEAT_COOL), not on
+   `house_average ≥ target`** — a temperature gate is self-defeating (overcooling lowers the house, which
+   flips the gate off, which snaps back). Feedforward stays keyed on the *nominal* target so a target change
+   doesn't re-jump on humidity swings; trim absorbs the overcool. `K` is target-independent, so learning at
+   the overcooled steady state is fine.
 7. **Fan-circulate:** stratification > threshold → fan `on`; < lower threshold → fan `auto`.
 8. **Failsafe / OFF:** stale target → freeze + notify. Master enable OFF → stop writing entirely.
 
@@ -134,7 +140,12 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        backend harness); `async_set_temperature` hands it to `coordinator.async_set_target`, which
        feedforward-jumps the band. A user-set target is flagged + persisted so re-enable keeps it
        (auto-seeded targets still re-seed to "now"). (#13)
-6. ⬜ Humidity bias + fan-circulate layers.
+6. Humidity bias + fan-circulate layers:
+   - 6a. ✅ Pure overcool logic in `decide()` — effective-target shift (`gain × RH-excess`, capped),
+     mode-gated cooling flag wired live (`humidity=None` until 6b), feedforward stays on the nominal
+     target. Unit-tested; no behavior change yet (RH is None).
+   - 6b. ⬜ Humidity sensor in the config flow + RH read wired into the coordinator tick.
+   - 6c. ⬜ Fan-circulate (continuous fan when room spread exceeds threshold).
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
    default store. (v2: direct Skyport API + reauth.)

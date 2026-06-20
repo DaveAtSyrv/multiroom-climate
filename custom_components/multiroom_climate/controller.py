@@ -72,6 +72,15 @@ class ControllerConfig:
     offset_alpha: float = 0.05
     """EMA rate for learning the band-to-house offset K (small = slow/robust)."""
 
+    humidity_target: float = 50.0
+    """Relative-humidity setpoint (%). Above this, cooling overcools to wring out moisture."""
+
+    humidity_gain: float = 0.1
+    """Degrees of overcool per point of RH above ``humidity_target`` (caller's unit)."""
+
+    humidity_max_overcool: float = 2.0
+    """Cap on the humidity overcool offset (caller's unit) — bounds how far we chase dryness."""
+
 
 @dataclass(frozen=True)
 class ControllerInputs:
@@ -105,6 +114,15 @@ class ControllerInputs:
     """The target the caller last acted on; ``target != last_target`` triggers the feedforward jump.
     ``None`` before the caller has ever acted (or right after an explicit target change) — which
     correctly reads as "changed" and fires feedforward."""
+
+    humidity: float | None = None
+    """Current relative humidity (%), or ``None`` if no humidity sensor is configured/fresh.
+    ``None`` disables overcool entirely."""
+
+    cooling: bool = False
+    """Whether the wrapped thermostat is in a cooling-capable mode (COOL/HEAT_COOL). Overcool only
+    applies while cooling — gated on the mode, not the house temperature, so our own actuation can't
+    flip the gate off and snap back."""
 
 
 @dataclass(frozen=True)
@@ -144,6 +162,21 @@ def _shift_band(inputs: ControllerInputs, config: ControllerConfig, shift: float
     )
 
 
+def _overcool(inputs: ControllerInputs, config: ControllerConfig) -> float:
+    """Degrees to lower the regulation point to wring out humidity, ``0.0`` when not applicable.
+
+    Only when cooling (mode-gated, not temperature-gated — see ``ControllerInputs.cooling``) and a
+    fresh humidity reading sits above ``humidity_target``. The offset is ``humidity_gain`` per point
+    of excess RH, capped at ``humidity_max_overcool``.
+    """
+    if inputs.humidity is None or not inputs.cooling:
+        return 0.0
+    excess = inputs.humidity - config.humidity_target
+    if excess <= 0:
+        return 0.0
+    return min(config.humidity_max_overcool, config.humidity_gain * excess)
+
+
 def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     """Return the next :class:`Action` for one control tick (pure; see module docstring)."""
     # Failsafe: never drive HVAC off a missing or stale reading (and never learn from one).
@@ -154,7 +187,12 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
             reason="failsafe",
         )
 
-    error = inputs.target - inputs.house_average
+    # Humidity overcool lowers the whole regulation point symmetrically (not just the cool setpoint):
+    # we hold the house a touch below the user's target while it's muggy. Feedforward below stays
+    # keyed on the *nominal* target so a target change doesn't re-jump on humidity swings; the slow
+    # trim absorbs the overcool bias over subsequent ticks.
+    effective_target = inputs.target - _overcool(inputs, config)
+    error = effective_target - inputs.house_average
     band_center = (inputs.band_low + inputs.band_high) / 2.0
 
     # FEEDFORWARD: on a target change, jump the band so band_center = target + learned_offset,

@@ -148,6 +148,67 @@ def test_offset_not_learned_on_trim():
     assert a.reason == "trim" and a.new_offset is None
 
 
+# --- humidity overcool -----------------------------------------------------
+
+# Overcool lowers the *effective* target (the whole regulation point), so a house that was settled
+# at the nominal target now reads as too-warm and trims down. Gains here: with humidity_gain 0.1 a
+# 20-point RH excess => 2.0° overcool (also the default cap).
+_HUMID_CFG = replace(CFG, humidity_target=50.0, humidity_gain=0.1, humidity_max_overcool=2.0)
+
+
+def test_overcool_trims_down_when_cooling_and_humid():
+    # Settled at target (error 0) but RH 70 while cooling -> effective target 21-2=19 -> trim down.
+    a = decide(_inputs(house_average=21.0, target=21.0, humidity=70.0, cooling=True), _HUMID_CFG)
+    assert a.set_band is True and a.reason == "trim"
+    assert a.band_low < 20.0 and a.band_high < 23.0
+
+
+def test_overcool_offset_capped():
+    # RH 200 over -> 0.1*150=15° raw, capped to 2.0: effective target 19, error -2.0 -> trim caps at max_step.
+    a = decide(_inputs(house_average=21.0, target=21.0, humidity=200.0, cooling=True), _HUMID_CFG)
+    assert a.set_band is True
+    assert (20.0 - a.band_low) == _HUMID_CFG.max_step  # error is -2.0, trim clamps to max_step down
+
+
+def test_no_overcool_when_not_cooling():
+    # Same humidity, but heating/off mode: no overcool, so still settled -> hold + learn.
+    a = decide(_inputs(house_average=21.0, target=21.0, humidity=70.0, cooling=False), _HUMID_CFG)
+    assert a.set_band is False and a.reason == "within_deadband"
+
+
+def test_no_overcool_when_humidity_none():
+    a = decide(_inputs(house_average=21.0, target=21.0, humidity=None, cooling=True), _HUMID_CFG)
+    assert a.set_band is False and a.reason == "within_deadband"
+
+
+def test_no_overcool_when_humidity_at_or_below_target():
+    a = decide(_inputs(house_average=21.0, target=21.0, humidity=50.0, cooling=True), _HUMID_CFG)
+    assert a.set_band is False and a.reason == "within_deadband"
+
+
+def test_overcool_does_not_perturb_feedforward():
+    # Target change fires feedforward keyed on the NOMINAL target, ignoring the humidity overcool.
+    a = decide(
+        _inputs(target=24.0, last_target=21.0, learned_offset=2.0, band_low=22.0, band_high=24.0,
+                humidity=70.0, cooling=True),
+        _HUMID_CFG,
+    )
+    assert a.reason == "feedforward"
+    assert (a.band_low + a.band_high) / 2.0 == pytest.approx(24.0 + 2.0)  # nominal target, not 22
+
+
+def test_overcool_learns_at_the_overcooled_steady_state():
+    # House held at the overcooled point (19 = 21-2): error 0 -> learn. K is target-independent, so
+    # learning during overcool is fine (the EMA tracks band_center - house regardless of target).
+    a = decide(
+        _inputs(house_average=19.0, target=21.0, band_low=20.0, band_high=23.0,
+                learned_offset=0.0, humidity=70.0, cooling=True),
+        _HUMID_CFG,
+    )
+    assert a.reason == "within_deadband"
+    assert a.new_offset == pytest.approx(0.05 * (21.5 - 19.0))
+
+
 # --- closed-loop simulation (the merge-blocking tests) ---------------------
 
 # A toy *physics* plant, written independently of the controller's formula: the thermostat drives
