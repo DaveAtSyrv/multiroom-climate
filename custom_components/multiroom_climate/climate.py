@@ -1,14 +1,18 @@
-"""Read-only climate entity: expose the weighted house average, mirror the wrapped thermostat.
+"""Climate entity: the user-facing thermostat for the weighted house average.
 
-This is the observe layer (SPEC §6 step 5). It writes NOTHING to the wrapped thermostat and
-supports no setpoint features — ``decide()`` actuation lands in the next PR. It only renders the
-``CoordinatorData`` the coordinator computes: ``current_temperature`` (the weighted house average)
-and the wrapped thermostat's HVAC mode, so the pair reads sensibly in the UI.
+``current_temperature`` is the weighted house average and ``target_temperature`` is the single
+temperature to hold it at; setting it hands the new target to the coordinator, which slides the
+wrapped thermostat's AUTO band to reach it (when the master switch is on). HVAC mode mirrors the
+wrapped thermostat. The single setpoint is deliberate — the wrapped band is the coordinator's
+actuation interface, so the user only ever picks *one* house temperature.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.climate import (
+    ATTR_TEMPERATURE,
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
@@ -32,9 +36,9 @@ async def async_setup_entry(
 class MultiroomClimateEntity(
     CoordinatorEntity[MultiroomClimateCoordinator], ClimateEntity
 ):
-    """Renders the house average and mirrors the wrapped thermostat's HVAC mode (no writes)."""
+    """Renders the house average + a single settable target; mirrors the wrapped HVAC mode."""
 
-    _attr_supported_features = ClimateEntityFeature(0)
+    _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
 
     def __init__(
         self, coordinator: MultiroomClimateCoordinator, entry: MultiroomConfigEntry
@@ -61,6 +65,16 @@ class MultiroomClimateEntity(
     def current_temperature(self) -> float | None:
         """The weighted house average the controller regulates toward."""
         return self.coordinator.data.house_average
+
+    @property
+    def target_temperature(self) -> float | None:
+        """The single temperature the user wants the house average held at."""
+        return self.coordinator.data.target
+
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Hand a new target to the coordinator (it feedforward-jumps the band to reach it)."""
+        if (target := kwargs.get(ATTR_TEMPERATURE)) is not None:
+            await self.coordinator.async_set_target(target)
 
     @property
     def hvac_mode(self) -> HVACMode | None:

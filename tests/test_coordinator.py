@@ -288,6 +288,67 @@ async def test_partial_staleness_regulates_off_survivors(hass: HomeAssistant) ->
     assert data.status == "within_deadband"
 
 
+async def test_set_target_marks_user_set_and_persists(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator.async_set_target(72.0)
+
+    assert coordinator._target == 72.0
+    assert coordinator._target_user_set is True
+    await coordinator._store.async_save(coordinator._persisted_state())
+    assert hass_storage[coordinator._store.key]["data"]["target"] == 72.0
+    assert hass_storage[coordinator._store.key]["data"]["target_user_set"] is True
+    await coordinator.async_shutdown()
+
+
+async def test_user_target_survives_reenable(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator.async_set_target(72.0)
+    coordinator.set_enabled(False)
+    coordinator.set_enabled(True)  # user toggle, but the chosen target must be kept
+
+    assert coordinator._target == 72.0
+    await coordinator.async_shutdown()
+
+
+async def test_autoseeded_target_reseeds_on_enable(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # auto-seeds target = 70 (not user-set)
+    assert coordinator._target == 70.0
+    coordinator.set_enabled(True)  # never user-set → re-seed to "now" on enable
+
+    assert coordinator._target is None
+
+
+async def test_new_target_feedforwards_and_writes_when_enabled(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    coordinator.set_enabled(True)
+    await coordinator._async_update_data()  # seed target = 70, last_target = 70
+
+    coordinator._target = 75.0  # a new target diverges from last_target → feedforward next tick
+    calls = async_mock_service(hass, "climate", "set_temperature")
+    data = await coordinator._async_update_data()
+
+    assert data.proposed is not None and data.proposed.reason == "feedforward"
+    assert len(calls) == 1  # the band jumped toward the new target
+
+
 async def test_restores_state_on_load(hass: HomeAssistant, hass_storage) -> None:
     hass.config.units = US_CUSTOMARY_SYSTEM
     coordinator = _make_coordinator(hass, ["sensor.a"])

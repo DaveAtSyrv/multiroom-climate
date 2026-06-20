@@ -54,7 +54,7 @@ _STORE_VERSION = 1
 _SAVE_DELAY_S = 600.0
 
 
-def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, float | None]]:
+def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, float | bool | None]]:
     """The per-config-entry Store holding the coordinator's control state.
 
     A module-level factory so entry removal can delete the file without constructing a coordinator.
@@ -167,6 +167,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._last_target: float | None = None
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
+        # Whether the target was explicitly set (via async_set_target — a user today, a schedule in
+        # step 7) vs auto-seeded. An explicit target is kept across an enable toggle; an auto-seeded
+        # one is re-seeded to "now" (see set_enabled).
+        self._target_user_set: bool = False
 
         # Master enable (the kill switch). Default off: a fresh install is inert until the user opts
         # in, so it never drives the thermostat unexpectedly. Owned here; the switch entity sets it.
@@ -176,8 +180,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         """Restore persisted control state before the first refresh.
 
         Restoring ``target`` means we don't re-seed it to the current house average on restart.
-        Restoring ``last_target`` keeps the feedforward gate sound once 5d makes the target
-        user-settable — today the two are always equal, so feedforward is inert either way.
+        Restoring ``last_target`` (which a user target change deliberately leaves behind, so a
+        feedforward can be pending) keeps the feedforward gate sound across the restart.
         """
         stored = await self._store.async_load()
         if not stored:
@@ -186,14 +190,16 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._target = stored.get("target")
         self._last_target = stored.get("last_target")
         self._last_change_ts = stored.get("last_change_ts", 0.0)
+        self._target_user_set = stored.get("target_user_set", False)
 
     @callback
-    def _persisted_state(self) -> dict[str, float | None]:
+    def _persisted_state(self) -> dict[str, float | bool | None]:
         return {
             "learned_offset": self._learned_offset,
             "target": self._target,
             "last_target": self._last_target,
             "last_change_ts": self._last_change_ts,
+            "target_user_set": self._target_user_set,
         }
 
     def _save_state(self) -> None:
@@ -204,17 +210,29 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     def set_enabled(self, enabled: bool, *, reseed: bool = True) -> None:
         """Flip the kill switch (the switch entity calls this).
 
-        A user toggle (``reseed=True``) re-seeds the target to the current house average on enable —
-        so turning control on means "hold where we are now" rather than jumping toward a possibly-
-        stale seed — while keeping the expensive learned offset. Restore-on-restart passes
-        ``reseed=False`` to resume regulating toward the persisted target it was already holding.
+        A user toggle (``reseed=True``) re-seeds an *auto-seeded* target to the current house average
+        on enable — so turning control on means "hold where we are now" rather than jumping toward a
+        possibly-stale seed — while keeping the expensive learned offset. An explicitly-set target is
+        kept. Restore-on-restart passes ``reseed=False`` to resume the persisted target as-is.
         Disabling just stops writing; the band is left as-is (already bias-compensated for current
         conditions), so the handback is clean.
         """
         self.enabled = enabled
-        if enabled and reseed:
+        # Only auto-seeded targets get re-seeded to "now"; a user's chosen target is kept.
+        if enabled and reseed and not self._target_user_set:
             self._target = None
             self._last_target = None
+
+    async def async_set_target(self, target: float) -> None:
+        """Set the user's desired house temperature (the climate entity calls this).
+
+        ``_last_target`` is deliberately left unchanged so the next tick sees ``target !=
+        last_target`` and feedforward-jumps the band to the new target in one move.
+        """
+        self._target = target
+        self._target_user_set = True
+        self._save_state()
+        await self.async_request_refresh()
 
     def _read_sensors(self) -> tuple[float | None, int]:
         """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
