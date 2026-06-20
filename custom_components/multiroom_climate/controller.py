@@ -81,6 +81,13 @@ class ControllerConfig:
     humidity_max_overcool: float = 2.0
     """Cap on the humidity overcool offset (caller's unit) — bounds how far we chase dryness."""
 
+    fan_spread_high: float = 2.0
+    """Room-to-room spread (max−min, caller's unit) at/above which the fan circulates continuously."""
+
+    fan_spread_low: float = 1.0
+    """Spread at/below which the fan returns to auto. The gap to ``fan_spread_high`` is the
+    hysteresis that prevents the fan thrashing on/off near a single threshold."""
+
 
 @dataclass(frozen=True)
 class ControllerInputs:
@@ -214,3 +221,40 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     # Integral trim: ADD kp*error onto the current band (not an absolute setpoint — see module doc).
     desired_step = _clamp(config.kp * error, -config.max_step, config.max_step)
     return _shift_band(inputs, config, desired_step, "trim")
+
+
+@dataclass(frozen=True)
+class FanAction:
+    """The fan-circulate decision. ``set_fan`` False means "leave the fan mode alone".
+
+    Boolean-only by design — the caller maps ``circulate`` to its platform's fan-mode strings
+    (FAN_ON / FAN_AUTO) and checks they're supported. ``circulate`` is meaningful only when
+    ``set_fan`` is True: True = run the fan continuously, False = hand it back to auto.
+    """
+
+    set_fan: bool
+    circulate: bool = False
+    reason: str = ""
+
+
+def decide_fan(spread: float | None, circulating: bool, config: ControllerConfig) -> FanAction:
+    """Decide whether to circulate the fan to break up room-to-room stratification (pure).
+
+    Driven purely by the room temperature ``spread`` (max−min across fresh sensors); deliberately
+    **not** gated on HVAC mode — circulation matters most when the system is *idle* and there's no
+    forced airflow, which is the opposite of the cooling-gated humidity overcool. A two-threshold
+    hysteresis band (``fan_spread_high``/``low``) is the only anti-thrash; there is no time limit.
+
+    ``spread is None`` (fewer than two fresh sensors) is the failsafe: hold the fan where it is — the
+    stakes are low, so a silent hold beats a notify. ``circulating`` is whether the fan is already
+    running continuously, so a change is proposed only when the desired state actually differs.
+    """
+    if spread is None:
+        return FanAction(set_fan=False, reason="no_spread")
+    if spread >= config.fan_spread_high:
+        desired, reason = True, "spread_high"
+    elif spread <= config.fan_spread_low:
+        desired, reason = False, "spread_low"
+    else:
+        return FanAction(set_fan=False, reason="within_hysteresis")
+    return FanAction(set_fan=desired != circulating, circulate=desired, reason=reason)

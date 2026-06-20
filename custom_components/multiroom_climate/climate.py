@@ -13,6 +13,8 @@ from typing import Any
 
 from homeassistant.components.climate import (
     ATTR_TEMPERATURE,
+    FAN_AUTO,
+    FAN_ON,
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
@@ -106,6 +108,8 @@ class MultiroomClimateEntity(
             "shadow_target": data.target,
             "shadow_learned_offset": round(data.learned_offset, 2),
             "shadow_humidity": data.humidity,  # RH decide() saw (None = no sensor/stale → overcool off)
+            "shadow_spread": data.spread,  # room max−min driving fan-circulate (None = <2 fresh)
+            "shadow_fan_status": data.fan_proposed.reason,
         }
         proposed = data.proposed
         if proposed is not None:
@@ -114,4 +118,6 @@ class MultiroomClimateEntity(
                 attrs["shadow_proposed_band_high"] = proposed.band_high
             if proposed.notify:
                 attrs["shadow_notify"] = proposed.notify
+        if data.fan_proposed.set_fan:
+            attrs["shadow_proposed_fan"] = FAN_ON if data.fan_proposed.circulate else FAN_AUTO
         return attrs

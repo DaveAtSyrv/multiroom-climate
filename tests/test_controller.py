@@ -11,6 +11,7 @@ from custom_components.multiroom_climate.controller import (
     ControllerConfig,
     ControllerInputs,
     decide,
+    decide_fan,
 )
 
 CFG = ControllerConfig(deadband=0.5, kp=0.3, max_step=0.5, min_period_s=720.0, temp_min=7.0, temp_max=35.0)
@@ -302,3 +303,49 @@ def test_feedforward_recovers_faster_than_trim_only():
     trim_only = ticks_to_recover(use_ff=False)
     assert ff < trim_only  # feedforward is faster
     assert ff * 2 <= trim_only  # and materially so
+
+
+# --- fan-circulate (pure decide_fan) ---------------------------------------
+
+_FAN_CFG = replace(CFG, fan_spread_high=2.0, fan_spread_low=1.0)
+
+
+def test_fan_no_spread_holds():
+    # Fewer than two fresh sensors → spread is None → hold the fan (the failsafe; no notify).
+    a = decide_fan(None, circulating=False, config=_FAN_CFG)
+    assert a.set_fan is False and a.reason == "no_spread"
+
+
+def test_fan_high_spread_starts_circulating():
+    a = decide_fan(2.5, circulating=False, config=_FAN_CFG)
+    assert a.set_fan is True and a.circulate is True and a.reason == "spread_high"
+
+
+def test_fan_high_spread_already_on_holds():
+    # Above the high threshold but already circulating → no redundant write.
+    a = decide_fan(2.5, circulating=True, config=_FAN_CFG)
+    assert a.set_fan is False and a.reason == "spread_high"
+
+
+def test_fan_low_spread_returns_to_auto():
+    a = decide_fan(0.5, circulating=True, config=_FAN_CFG)
+    assert a.set_fan is True and a.circulate is False and a.reason == "spread_low"
+
+
+def test_fan_low_spread_already_auto_holds():
+    a = decide_fan(0.5, circulating=False, config=_FAN_CFG)
+    assert a.set_fan is False and a.reason == "spread_low"
+
+
+def test_fan_hysteresis_band_holds_either_state():
+    # Between low and high: hold whatever the fan is doing (the anti-thrash dead zone).
+    assert decide_fan(1.5, circulating=False, config=_FAN_CFG).set_fan is False
+    on = decide_fan(1.5, circulating=True, config=_FAN_CFG)
+    assert on.set_fan is False and on.reason == "within_hysteresis"
+
+
+def test_fan_not_gated_on_hvac_mode():
+    # decide_fan has no mode input at all — circulation is driven purely by spread (it matters most
+    # when the system is idle). This pins that the signature never grows an HVAC gate.
+    a = decide_fan(3.0, circulating=False, config=_FAN_CFG)
+    assert a.set_fan is True and a.circulate is True

@@ -23,11 +23,13 @@ from datetime import timedelta
 import logging
 
 from homeassistant.components.climate import (
+    ATTR_FAN_MODE,
     ATTR_MAX_TEMP,
     ATTR_MIN_TEMP,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
     DOMAIN as CLIMATE_DOMAIN,
+    FAN_ON,
     SERVICE_SET_TEMPERATURE,
     HVACMode,
 )
@@ -45,7 +47,14 @@ from .const import (
     CONF_TARGET_SENSORS,
     DOMAIN,
 )
-from .controller import Action, ControllerConfig, ControllerInputs, decide
+from .controller import (
+    Action,
+    ControllerConfig,
+    ControllerInputs,
+    FanAction,
+    decide,
+    decide_fan,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _UPDATE_INTERVAL = timedelta(seconds=60)
@@ -76,6 +85,16 @@ def house_average(temps: list[float]) -> float | None:
     return sum(temps) / len(temps) if temps else None
 
 
+def spread(temps: list[float]) -> float | None:
+    """Room-to-room temperature spread (max−min), or None with fewer than two fresh sensors.
+
+    The fan-circulate signal: a large spread means the house is stratified and the fan should run.
+    ``None`` (a single-sensor install, or only one fresh sensor) simply means "can't tell" — the fan
+    holds.
+    """
+    return max(temps) - min(temps) if len(temps) >= 2 else None
+
+
 def _to_hvac_mode(value: str) -> HVACMode | None:
     """Coerce a state/attribute string to an HVACMode, or None if it isn't one."""
     try:
@@ -98,6 +117,7 @@ class _WrappedReading:
     band_high: float | None
     temp_min: float | None
     temp_max: float | None
+    fan_mode: str | None
 
     @property
     def present(self) -> bool:
@@ -114,6 +134,11 @@ class _WrappedReading:
         """Whether the current mode is cooling-capable (COOL/HEAT_COOL) — gates humidity overcool."""
         return self.hvac_mode in (HVACMode.COOL, HVACMode.HEAT_COOL)
 
+    @property
+    def is_circulating(self) -> bool:
+        """Whether the fan is already running continuously (FAN_ON) vs auto/unknown."""
+        return self.fan_mode == FAN_ON
+
 
 # The "thermostat missing/unavailable" reading — shareable because the dataclass is frozen.
 _NO_READING = _WrappedReading(
@@ -123,6 +148,7 @@ _NO_READING = _WrappedReading(
     band_high=None,
     temp_min=None,
     temp_max=None,
+    fan_mode=None,
 )
 
 
@@ -146,6 +172,8 @@ class CoordinatorData:
     target: float | None
     learned_offset: float
     humidity: float | None  # the RH decide() saw this tick (None = no sensor/stale → overcool off)
+    spread: float | None  # room-to-room max−min (None = <2 fresh sensors); drives fan-circulate
+    fan_proposed: FanAction  # the fan-circulate decision (shadow only until 6c-2 wires the write)
     proposed: Action | None
     status: str
     fresh_sensors: int
@@ -256,10 +284,12 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             return None
         return convert(state.state, float)
 
-    def _read_sensors(self) -> tuple[float | None, int]:
-        """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
-        temps = [v for s in self._sensors if (v := self._read_state_float(s)) is not None]
-        return house_average(temps), len(temps)
+    def _read_sensors(self) -> list[float]:
+        """Return the fresh room temperatures (skipping unavailable/unknown/non-numeric).
+
+        The caller derives the house average, fresh count, and spread from this one read.
+        """
+        return [v for s in self._sensors if (v := self._read_state_float(s)) is not None]
 
     def _read_humidity(self) -> float | None:
         """Current relative humidity, or ``None`` if no sensor is configured/fresh.
@@ -292,6 +322,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             band_high=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH), float),
             temp_min=convert(wrapped.attributes.get(ATTR_MIN_TEMP), float),
             temp_max=convert(wrapped.attributes.get(ATTR_MAX_TEMP), float),
+            fan_mode=wrapped.attributes.get(ATTR_FAN_MODE),
         )
 
     def _evaluate(
@@ -390,10 +421,16 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
 
     async def _async_update_data(self) -> CoordinatorData:
         before = self._persisted_state()
-        house_avg, fresh = self._read_sensors()
+        temps = self._read_sensors()
+        house_avg = house_average(temps)
+        fresh = len(temps)
+        room_spread = spread(temps)
         humidity = self._read_humidity()
         wrapped = self._read_wrapped()
         proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
+        # Fan-circulate runs every tick regardless of HVAC mode (stratification builds when idle).
+        # Shadow only until 6c-2 wires the set_fan_mode write behind the enable switch.
+        fan_proposed = decide_fan(room_spread, wrapped.is_circulating, self._config)
 
         # Actuate only when enabled; decide() still ran (above) so the shadow_* attributes keep
         # showing what it would do. last_change_ts advances only on a *successful* write.
@@ -413,6 +450,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             target=self._target,
             learned_offset=self._learned_offset,
             humidity=humidity,
+            spread=room_spread,
+            fan_proposed=fan_proposed,
             proposed=proposed,
             status=status,
             fresh_sensors=fresh,

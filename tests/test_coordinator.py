@@ -28,6 +28,7 @@ from custom_components.multiroom_climate.const import (
 from custom_components.multiroom_climate.coordinator import (
     MultiroomClimateCoordinator,
     house_average,
+    spread,
 )
 
 
@@ -41,6 +42,18 @@ def test_house_average_single_sensor() -> None:
 
 def test_house_average_empty_is_none() -> None:
     assert house_average([]) is None
+
+
+def test_spread_is_max_minus_min() -> None:
+    assert spread([20.0, 24.0, 22.0]) == 4.0
+
+
+def test_spread_single_sensor_is_none() -> None:
+    assert spread([21.0]) is None
+
+
+def test_spread_empty_is_none() -> None:
+    assert spread([]) is None
 
 
 def _make_coordinator(
@@ -235,6 +248,56 @@ async def test_stale_humidity_disables_overcool(hass: HomeAssistant) -> None:
 
     assert data.humidity is None
     assert data.proposed is not None and data.proposed.reason == "within_deadband"
+
+
+# --- fan-circulate wiring (spread → decide_fan; shadow only until 6c-2) ------
+
+def _heat_cool_fan(low: float, high: float, fan_mode: str) -> tuple[str, dict]:
+    state, attrs = _heat_cool(low, high)
+    return state, {**attrs, "fan_mode": fan_mode}
+
+
+async def test_high_spread_proposes_circulate(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")  # spread 6 ≫ high threshold
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto"))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.spread == 6.0
+    assert data.fan_proposed.set_fan is True
+    assert data.fan_proposed.circulate is True
+    assert data.fan_proposed.reason == "spread_high"
+
+
+async def test_low_spread_returns_fan_to_auto(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.b", "70.2")  # spread 0.2 < low threshold
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "on"))  # already circulating
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.fan_proposed.set_fan is True
+    assert data.fan_proposed.circulate is False
+    assert data.fan_proposed.reason == "spread_low"
+
+
+async def test_single_fresh_sensor_holds_fan(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.b", "unavailable")  # only one fresh → spread None
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto"))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.spread is None
+    assert data.fan_proposed.set_fan is False
+    assert data.fan_proposed.reason == "no_spread"
 
 
 async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:
