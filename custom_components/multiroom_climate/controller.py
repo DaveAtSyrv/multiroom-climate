@@ -171,9 +171,7 @@ def _overcool(inputs: ControllerInputs, config: ControllerConfig) -> float:
     """
     if inputs.humidity is None or not inputs.cooling:
         return 0.0
-    excess = inputs.humidity - config.humidity_target
-    if excess <= 0:
-        return 0.0
+    excess = max(0.0, inputs.humidity - config.humidity_target)
     return min(config.humidity_max_overcool, config.humidity_gain * excess)
 
 
