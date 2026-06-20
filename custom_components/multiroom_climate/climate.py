@@ -23,6 +23,10 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry, fan_mode_for
 
+# Coordinator centralizes/serializes all device I/O; entity actions only touch in-memory state.
+# 0 = unlimited, the HA quality-scale value for coordinator-based integrations.
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,

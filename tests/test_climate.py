@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.multiroom_climate import climate as climate_platform
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
     CONF_TARGET_SENSORS,
@@ -222,3 +223,9 @@ async def test_remove_entry_deletes_stored_state(
 
     # The .storage file must not orphan when the entry is deleted.
     assert store.key not in hass_storage
+
+
+def test_parallel_updates_zero_for_coordinator_platform() -> None:
+    # The coordinator serializes all device I/O, so the platform declares unlimited (0) per the
+    # HA quality scale; pin it so the quality-bar rule can't silently regress.
+    assert climate_platform.PARALLEL_UPDATES == 0

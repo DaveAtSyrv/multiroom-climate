@@ -17,6 +17,10 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry
 
+# Toggling only flips the coordinator's in-memory enable flag; the coordinator owns all device I/O.
+# 0 = unlimited, the HA quality-scale value for coordinator-based integrations.
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
