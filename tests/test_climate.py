@@ -96,7 +96,7 @@ async def test_exposes_shadow_decision_attributes(
     state = hass.states.get(entity_id)
 
     assert state is not None
-    # Shadow outputs are surfaced for observability; nothing is written to the thermostat.
+    # The controller's decision is surfaced for observability; with the switch off, nothing is written.
     assert state.attributes["shadow_target"] == 70.0
     assert state.attributes["shadow_status"] == "within_deadband"
     assert state.attributes["shadow_sensors_fresh"] == 2
