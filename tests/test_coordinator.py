@@ -53,7 +53,6 @@ async def test_update_averages_valid_sensors(hass: HomeAssistant) -> None:
     data = await coordinator._async_update_data()
 
     assert data.house_average == 22.0
-    assert data.available is True
 
 
 async def test_update_skips_unavailable_and_non_numeric(hass: HomeAssistant) -> None:
@@ -65,7 +64,6 @@ async def test_update_skips_unavailable_and_non_numeric(hass: HomeAssistant) -> 
     data = await coordinator._async_update_data()
 
     assert data.house_average == 20.0
-    assert data.available is True
 
 
 async def test_update_unavailable_when_no_valid_sensors(hass: HomeAssistant) -> None:
@@ -75,7 +73,6 @@ async def test_update_unavailable_when_no_valid_sensors(hass: HomeAssistant) -> 
     data = await coordinator._async_update_data()
 
     assert data.house_average is None
-    assert data.available is False
 
 
 async def test_mirrors_wrapped_mode_and_drops_unknown_modes(hass: HomeAssistant) -> None:

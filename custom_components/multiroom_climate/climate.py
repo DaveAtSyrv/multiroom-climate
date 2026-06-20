@@ -92,9 +92,10 @@ class MultiroomClimateEntity(
             "shadow_learned_offset": round(data.learned_offset, 2),
         }
         proposed = data.proposed
-        if proposed is not None and proposed.set_band:
-            attrs["shadow_proposed_band_low"] = proposed.band_low
-            attrs["shadow_proposed_band_high"] = proposed.band_high
-        if proposed is not None and proposed.notify:
-            attrs["shadow_notify"] = proposed.notify
+        if proposed is not None:
+            if proposed.set_band:
+                attrs["shadow_proposed_band_low"] = proposed.band_low
+                attrs["shadow_proposed_band_high"] = proposed.band_high
+            if proposed.notify:
+                attrs["shadow_notify"] = proposed.notify
         return attrs

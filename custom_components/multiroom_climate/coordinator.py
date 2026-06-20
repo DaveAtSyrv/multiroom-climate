@@ -123,12 +123,6 @@ class CoordinatorData:
     total_sensors: int
     thermostat_present: bool
 
-    @property
-    def available(self) -> bool:
-        """Whether there's a fresh house average to regulate toward (distinct from the thermostat
-        being reachable — see ``thermostat_present``)."""
-        return self.house_average is not None
-
 
 class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     """Polls sensors + wrapped thermostat, runs ``decide()`` in shadow, exposes a ``CoordinatorData``."""
