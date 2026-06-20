@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from homeassistant.components.climate import ClimateEntityFeature, HVACMode
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -229,3 +230,23 @@ def test_parallel_updates_zero_for_coordinator_platform() -> None:
     # The coordinator serializes all device I/O, so the platform declares unlimited (0) per the
     # HA quality scale; pin it so the quality-bar rule can't silently regress.
     assert climate_platform.PARALLEL_UPDATES == 0
+
+
+async def test_entities_grouped_under_one_device(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    hass.states.async_set("climate.daikin", "heat_cool", {"hvac_modes": ["off", "heat_cool"]})
+    entity_id = await _setup(hass)
+
+    # Main entity (name=None) takes the device name — guards against a "Downstairs Downstairs" leak.
+    assert hass.states.get(entity_id).attributes["friendly_name"] == "Downstairs"
+    assert hass.states.get("switch.downstairs_control").attributes["friendly_name"] == (
+        "Downstairs Control"
+    )
+
+    # The climate + switch entities share one (non-None) device — the grouping this adds.
+    registry = er.async_get(hass)
+    climate_dev = registry.async_get(entity_id).device_id
+    switch_dev = registry.async_get("switch.downstairs_control").device_id
+    assert climate_dev is not None
+    assert climate_dev == switch_dev

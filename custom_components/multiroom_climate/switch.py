@@ -15,7 +15,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry
+from .coordinator import (
+    MultiroomClimateCoordinator,
+    MultiroomConfigEntry,
+    build_device_info,
+)
 
 # Toggling only flips the coordinator's in-memory enable flag; the coordinator owns all device I/O.
 # 0 = unlimited, the HA quality-scale value for coordinator-based integrations.
@@ -35,13 +39,15 @@ class MultiroomEnableSwitch(RestoreEntity, SwitchEntity):
     """Turns the coordinator's actuation on/off and restores its last state across restarts."""
 
     _attr_icon = "mdi:thermostat-auto"
+    _attr_has_entity_name = True
+    _attr_translation_key = "control"
 
     def __init__(
         self, coordinator: MultiroomClimateCoordinator, entry: MultiroomConfigEntry
     ) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_enable"
-        self._attr_name = f"{entry.title} control"
+        self._attr_device_info = build_device_info(entry)
 
     @property
     def is_on(self) -> bool:
