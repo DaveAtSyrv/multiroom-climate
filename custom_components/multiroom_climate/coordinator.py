@@ -1,13 +1,13 @@
 """Coordinator: poll the target sensors + wrapped thermostat and run the controller each tick.
 
-Per SPEC §5 the coordinator owns *all* the reads each tick — the room sensors (for the weighted
-house average) and the wrapped thermostat (its HVAC mode, AUTO band, and temperature bounds). It
+Per SPEC §5 the coordinator owns *all* the reads each tick — the room sensors (for the house
+average) and the wrapped thermostat (its HVAC mode, AUTO band, and temperature bounds). It
 runs the pure ``controller.decide()`` each tick and records the proposed ``Action``. When the master
 switch is **on** it writes that band to the thermostat via ``climate.set_temperature``; when **off**
 it only records the proposal (so the ``shadow_*`` attributes still show what it would do). Control
 state is persisted to a ``Store`` so the learned bias survives restarts.
 
-Sensor availability + failsafe (SPEC §3/§4.8): a fresh weighted average needs at least one usable
+Sensor availability + failsafe (SPEC §3/§4.8): a fresh average needs at least one usable
 sensor. With *some* sensors stale we still regulate off the survivors (a transient dropout must not
 freeze the HVAC) and expose ``fresh/total`` so the degradation is visible. With *no* fresh sensor we
 hand ``available=False`` to ``decide()`` — but only once we were already regulating — so it returns

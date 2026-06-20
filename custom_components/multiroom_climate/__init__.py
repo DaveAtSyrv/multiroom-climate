@@ -1,6 +1,6 @@
 """The Multiroom Climate integration.
 
-A Home Assistant smart thermostat that regulates the home to a weighted average of chosen room
+A Home Assistant smart thermostat that regulates the home to an average of chosen room
 sensors and auto-learns the bias of the wrapped thermostat's own sensor. See SPEC.md.
 
 It forwards a ``climate`` entity (the house thermostat) and a ``switch`` entity (the master enable).
