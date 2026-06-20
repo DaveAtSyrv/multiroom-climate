@@ -120,4 +120,7 @@ class MultiroomClimateEntity(
             attrs["shadow_proposed_fan"] = fan_mode_for(data.fan_proposed.circulate)
         if data.fan_blocked is not None:
             attrs["shadow_fan_blocked"] = data.fan_blocked
+        if data.scheduled is not None:
+            # The day/night setpoint for now; the target jumps to it at transitions (None = no schedule).
+            attrs["shadow_scheduled"] = data.scheduled
         return attrs

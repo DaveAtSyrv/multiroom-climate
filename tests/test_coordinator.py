@@ -7,6 +7,7 @@ non-numeric / unknown HVAC mode" behaviour is covered end to end.
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -122,11 +123,14 @@ def _make_coordinator(
     sensors: list[str],
     entry_id: str = "test_entry",
     humidity_sensor: str | None = None,
+    options: dict | None = None,
 ) -> MultiroomClimateCoordinator:
     data = {CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: sensors}
     if humidity_sensor is not None:
         data[CONF_HUMIDITY_SENSOR] = humidity_sensor
-    entry = MockConfigEntry(domain=DOMAIN, title="Test", entry_id=entry_id, data=data)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Test", entry_id=entry_id, data=data, options=options or {}
+    )
     return MultiroomClimateCoordinator(hass, entry)
 
 
@@ -771,3 +775,89 @@ async def test_failsafe_tick_does_not_save(hass: HomeAssistant) -> None:
 
     assert data.status == "failsafe"
     save.assert_not_called()  # snapshot-compare skips the write when no persisted field changed
+
+
+# --- day/night schedule wiring (7c) ----------------------------------------
+
+_SCHED_OPTS = {
+    CONF_SCHEDULE_ENABLED: True,
+    CONF_DAY_TEMP: 70.0,
+    CONF_NIGHT_TEMP: 64.0,
+    CONF_DAY_START: "06:00:00",
+    CONF_NIGHT_START: "22:00:00",
+    CONF_OPTIMAL_START_LEAD: 0,  # no lead → boundaries land exactly at 06:00 / 22:00
+}
+
+
+def _at(hour: int, minute: int = 0):
+    """Patch the coordinator's local clock to a fixed wall-clock time (only hour/minute are read)."""
+    return patch(
+        "custom_components.multiroom_climate.coordinator.dt_util.now",
+        return_value=datetime(2026, 1, 1, hour, minute),
+    )
+
+
+async def test_schedule_jumps_target_at_transition(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"], options=_SCHED_OPTS)
+
+    with _at(21, 0):  # daytime: first tick records the day setpoint and seeds target to the house avg
+        data = await coordinator._async_update_data()
+    assert data.scheduled == 70.0
+    assert data.target == 68.0  # seeded, not jumped (no transition is detectable on the first tick)
+
+    with _at(22, 30):  # crossed into the night period → target jumps to the night setpoint
+        data = await coordinator._async_update_data()
+    assert data.scheduled == 64.0
+    assert data.target == 64.0
+
+
+async def test_schedule_holds_target_between_transitions(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"], options=_SCHED_OPTS)
+
+    with _at(8, 0):  # day: record setpoint, seed target
+        await coordinator._async_update_data()
+    coordinator._target = 72.0  # a manual hold mid-period
+
+    with _at(10, 0):  # still day → no transition → the manual hold survives
+        data = await coordinator._async_update_data()
+    assert data.target == 72.0
+
+
+async def test_schedule_disabled_leaves_target_alone(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])  # no schedule configured
+
+    with _at(22, 30):
+        data = await coordinator._async_update_data()
+    assert data.scheduled is None
+    assert data.target == 68.0  # normal seed to the house average; the schedule never ran
+
+
+async def test_schedule_reasserts_after_restart_spanning_transition(hass: HomeAssistant) -> None:
+    """The advisor's case: a restart that spans a transition must jump to the new setpoint."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"], options=_SCHED_OPTS)
+    # Restored persisted state from before the downtime: the day target + last-seen day setpoint.
+    coordinator._target = 70.0
+    coordinator._last_target = 70.0
+    coordinator._last_scheduled = 70.0
+
+    with _at(22, 30):  # now in the night period → the first tick re-asserts the new setpoint
+        data = await coordinator._async_update_data()
+    assert data.target == 64.0
+
+
+def test_last_scheduled_round_trips_through_persisted_state(hass: HomeAssistant) -> None:
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    coordinator._last_scheduled = 64.0
+    assert coordinator._persisted_state()["last_scheduled"] == 64.0

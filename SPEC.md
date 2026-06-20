@@ -172,10 +172,17 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
      defaults). An `add_update_listener` reloads the entry on options change so the coordinator
      rebuilds. A `schedule_enabled` toggle is stored for 7c's gate. Schedule values stay inert until
      7c calls `scheduled_target` (shadow-before-actuate, like 6a).
-   - 7c. ⬜ Wire into the coordinator: convert HA local wall-clock → minutes (`dt_util.now()`, NOT
-     `utcnow()`); on a *change* in `scheduled_target` vs last tick, re-assert the target via
-     `async_set_target` (compare-to-last so a mid-period manual hold survives until the next
-     transition). Gated off when no schedule is configured.
+   - 7c. ✅ Wired into the coordinator (`_apply_schedule`, run each tick before `decide()`): local
+     wall-clock → minutes via `dt_util.now()` (NOT `utcnow()`); on a *change* in `scheduled_target`
+     vs the last tick it jumps the target (leaving `last_target` so `decide()` feedforward-jumps the
+     band), so a mid-period manual hold — or the re-seed after an enable toggle — survives until the
+     next transition. Gated off when no schedule is configured; the resulting write is still gated on
+     the kill switch (like the existing seed). `last_scheduled` is **persisted** so a restart spanning
+     a transition re-asserts the new setpoint instead of holding the old one for hours. Schedule
+     targets are deliberately left auto-seeded (not `target_user_set`) so the re-enable handback
+     keeps working. The current setpoint is surfaced as `shadow_scheduled`. **v1 note:** enabling a
+     schedule mid-period is inert until that period ends (the first visible change is the next
+     transition) — the correct reading of "on a *change*", documented so it's not a surprise.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
    default store. (v2: direct Skyport API + reauth.)
 
