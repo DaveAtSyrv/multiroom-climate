@@ -1,16 +1,23 @@
-"""Coordinator: poll the target sensors and expose the weighted house average."""
+"""Coordinator: poll the target sensors + wrapped thermostat, expose the regulated view.
+
+Per SPEC §5 the coordinator owns *all* the reads each tick — the room sensors (for the weighted
+house average) and the wrapped thermostat (its HVAC mode now; its setpoints when actuation lands).
+Entities render ``CoordinatorData``; they never reach around the coordinator to read state directly.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 import logging
 
+from homeassistant.components.climate import HVACMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import CONF_TARGET_SENSORS, DOMAIN
+from .const import CONF_CLIMATE_ENTITY, CONF_TARGET_SENSORS, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 _UPDATE_INTERVAL = timedelta(seconds=60)
@@ -24,8 +31,30 @@ def house_average(temps: list[float]) -> float | None:
     return sum(temps) / len(temps) if temps else None
 
 
-class MultiroomClimateCoordinator(DataUpdateCoordinator[dict]):
-    """Polls the configured target sensors and exposes ``house_average`` + ``available``."""
+def _to_hvac_mode(value: str) -> HVACMode | None:
+    """Coerce a state/attribute string to an HVACMode, or None if it isn't one."""
+    try:
+        return HVACMode(value)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class CoordinatorData:
+    """The regulated view computed each tick: the house average + the wrapped thermostat's mode."""
+
+    house_average: float | None
+    hvac_mode: HVACMode | None
+    hvac_modes: tuple[HVACMode, ...]
+
+    @property
+    def available(self) -> bool:
+        """Usable only when there's a house average to regulate toward."""
+        return self.house_average is not None
+
+
+class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
+    """Polls the target sensors + wrapped thermostat and exposes a ``CoordinatorData`` each tick."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
@@ -35,8 +64,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[dict]):
             update_interval=_UPDATE_INTERVAL,
         )
         self._sensors: list[str] = entry.data[CONF_TARGET_SENSORS]
+        self._wrapped: str = entry.data[CONF_CLIMATE_ENTITY]
 
-    async def _async_update_data(self) -> dict:
+    async def _async_update_data(self) -> CoordinatorData:
         temps: list[float] = []
         for sensor in self._sensors:
             state = self.hass.states.get(sensor)
@@ -46,5 +76,27 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[dict]):
                 temps.append(float(state.state))
             except ValueError:
                 continue
-        avg = house_average(temps)
-        return {"house_average": avg, "available": avg is not None}
+
+        hvac_mode: HVACMode | None = None
+        hvac_modes: tuple[HVACMode, ...] = ()
+        wrapped = self.hass.states.get(self._wrapped)
+        if wrapped is not None:
+            if wrapped.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                hvac_mode = _to_hvac_mode(wrapped.state)
+            hvac_modes = tuple(
+                mode
+                for mode in (
+                    _to_hvac_mode(value)
+                    for value in wrapped.attributes.get("hvac_modes", [])
+                )
+                if mode is not None
+            )
+
+        return CoordinatorData(
+            house_average=house_average(temps),
+            hvac_mode=hvac_mode,
+            hvac_modes=hvac_modes,
+        )
+
+
+type MultiroomConfigEntry = ConfigEntry[MultiroomClimateCoordinator]

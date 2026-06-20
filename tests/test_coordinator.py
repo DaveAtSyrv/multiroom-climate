@@ -1,19 +1,20 @@
 """Tests for the Multiroom Climate coordinator.
 
-The pure ``house_average`` helper is tested directly; the sensor-filtering path is exercised
-through a live coordinator reading ``hass.states`` so the "ignore unavailable / non-numeric"
-behaviour is covered end to end.
+The pure ``house_average`` helper is tested directly; the sensor + wrapped-thermostat read paths
+are exercised through a live coordinator reading ``hass.states`` so the "ignore unavailable /
+non-numeric / unknown HVAC mode" behaviour is covered end to end.
 """
 
 from __future__ import annotations
 
-import pytest
-from homeassistant.const import CONF_NAME
+from homeassistant.components.climate import HVACMode
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
     CONF_TARGET_SENSORS,
+    DOMAIN,
 )
 from custom_components.multiroom_climate.coordinator import (
     MultiroomClimateCoordinator,
@@ -34,18 +35,11 @@ def test_house_average_empty_is_none() -> None:
 
 
 def _make_coordinator(hass: HomeAssistant, sensors: list[str]) -> MultiroomClimateCoordinator:
-    entry = type(
-        "Entry",
-        (),
-        {
-            "title": "Test",
-            "data": {
-                CONF_NAME: "Test",
-                CONF_CLIMATE_ENTITY: "climate.daikin",
-                CONF_TARGET_SENSORS: sensors,
-            },
-        },
-    )()
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test",
+        data={CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: sensors},
+    )
     return MultiroomClimateCoordinator(hass, entry)
 
 
@@ -56,7 +50,8 @@ async def test_update_averages_valid_sensors(hass: HomeAssistant) -> None:
 
     data = await coordinator._async_update_data()
 
-    assert data == {"house_average": 22.0, "available": True}
+    assert data.house_average == 22.0
+    assert data.available is True
 
 
 async def test_update_skips_unavailable_and_non_numeric(hass: HomeAssistant) -> None:
@@ -67,7 +62,8 @@ async def test_update_skips_unavailable_and_non_numeric(hass: HomeAssistant) -> 
 
     data = await coordinator._async_update_data()
 
-    assert data == {"house_average": 20.0, "available": True}
+    assert data.house_average == 20.0
+    assert data.available is True
 
 
 async def test_update_unavailable_when_no_valid_sensors(hass: HomeAssistant) -> None:
@@ -76,4 +72,29 @@ async def test_update_unavailable_when_no_valid_sensors(hass: HomeAssistant) -> 
 
     data = await coordinator._async_update_data()
 
-    assert data == {"house_average": None, "available": False}
+    assert data.house_average is None
+    assert data.available is False
+
+
+async def test_mirrors_wrapped_mode_and_drops_unknown_modes(hass: HomeAssistant) -> None:
+    hass.states.async_set("sensor.a", "20.0")
+    hass.states.async_set(
+        "climate.daikin", "heat_cool", {"hvac_modes": ["off", "heat_cool", "bogus"]}
+    )
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.hvac_mode is HVACMode.HEAT_COOL
+    # "bogus" isn't a real HVACMode, so it's filtered out of the mirrored list.
+    assert data.hvac_modes == (HVACMode.OFF, HVACMode.HEAT_COOL)
+
+
+async def test_wrapped_missing_yields_no_mode(hass: HomeAssistant) -> None:
+    hass.states.async_set("sensor.a", "20.0")
+    coordinator = _make_coordinator(hass, ["sensor.a"])  # no climate.daikin in the state machine
+
+    data = await coordinator._async_update_data()
+
+    assert data.hvac_mode is None
+    assert data.hvac_modes == ()
