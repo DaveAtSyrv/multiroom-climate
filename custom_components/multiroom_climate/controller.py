@@ -7,15 +7,26 @@ integration and is **unit-agnostic**: temperatures are in whatever single unit t
 care, as long as every value in one call shares one unit.
 
 Control law — **integral (velocity) form, NOT proportional position.**
-Each tick we *add* ``kp * error`` onto the current band position and command the shifted band.
-Because the adjustment accumulates onto the band the thermostat already holds — rather than
-recomputing an absolute setpoint from the error each time — the loop integrates to **zero
-steady-state error**. That is precisely what silently absorbs the thermostat's own-sensor bias
-(the manual "set 67 to hold 70" trick) without ever modeling it.
+Each tick we *add* a shift onto the current band position and command the shifted band. Because the
+adjustment accumulates onto the band the thermostat already holds — rather than recomputing an
+absolute setpoint from the error each time — the loop integrates to **zero steady-state error**.
+That is precisely what silently absorbs the thermostat's own-sensor bias (the manual "set 67 to hold
+70" trick) without ever modeling it.
 
 Do **not** "simplify" this into a proportional *position* controller
 (``band = target ± kp * error``): that reintroduces a permanent steady-state offset and defeats the
 whole purpose of the integration. The accumulation is the point.
+
+Learned offset + feedforward.
+The slow trim above is for *holding*. To move fast on a target change we learn the **band-to-house
+offset** ``K = band_center - house_average`` at steady state (slow EMA), and on any target change we
+*jump* the band so ``band_center = target + K`` — a feedforward step that recovers in one move
+instead of crawling there via trim. ``K`` is learned relative to the band (what we actuate), not to
+the thermostat's own sensor, so it absorbs both the sensor bias and the band-center-vs-regulation
+gap in one number and needs no extra sensor. Learning happens **only when settled** (``|error| <=
+deadband``) so the house is never sampled mid-recovery. ``decide()`` is pure, so it *returns* the new
+offset (``Action.new_offset``); the caller persists it. ``new_offset is None`` means "leave K
+unchanged" — so a missed return path degrades to "didn't learn", never "wiped K".
 
 Scope boundary: this engine answers "given that we are controlling, what band next?" It deliberately
 does **not** own the master enable / kill switch. Whether to call ``decide()`` at all, and the
@@ -39,22 +50,26 @@ class ControllerConfig:
     """Tunable control parameters. All temperatures are in the caller's unit."""
 
     deadband: float = 0.5
-    """No band change while ``abs(error) <= deadband`` (avoids hunting)."""
+    """No band change while ``abs(error) <= deadband`` (avoids hunting); also the "settled" gate
+    for offset learning."""
 
     kp: float = 0.3
     """Integral gain: the band shift added per unit of error, per tick."""
 
     max_step: float = 0.5
-    """Cap on a single tick's band shift (rate limit on magnitude)."""
+    """Cap on a single trim tick's band shift (feedforward jumps are not capped)."""
 
     min_period_s: float = 720.0
-    """Minimum seconds between band changes (rate limit in time). Default 12 min."""
+    """Minimum seconds between *trim* band changes (rate limit in time). Default 12 min."""
 
     temp_min: float = 7.0
     """Lower bound the equipment band may not cross (caller's unit; override per system)."""
 
     temp_max: float = 35.0
     """Upper bound the equipment band may not cross (caller's unit; override per system)."""
+
+    offset_alpha: float = 0.05
+    """EMA rate for learning the band-to-house offset K (small = slow/robust)."""
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,12 @@ class ControllerInputs:
     last_change_ts: float
     """When the controller last changed the band, epoch seconds."""
 
+    learned_offset: float
+    """Persisted K = band_center - house_average at steady state (caller persists Action.new_offset)."""
+
+    last_target: float
+    """The target the caller last acted on; ``target != last_target`` triggers the feedforward jump."""
+
 
 @dataclass(frozen=True)
 class Action:
@@ -91,16 +112,38 @@ class Action:
     band_low: float | None = None
     band_high: float | None = None
     notify: str | None = None
+    new_offset: float | None = None
+    """Updated learned offset to persist, or None = leave the persisted value unchanged."""
     reason: str = ""
 
 
-def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
-    """Return the next :class:`Action` for one control tick (pure; see module docstring).
+def _shift_band(inputs: ControllerInputs, config: ControllerConfig, shift: float, reason: str) -> Action:
+    """Shift both band edges by ``shift``, preserving the heat/cool gap and staying in bounds.
 
-    Gate order is deliberately a flat sequence so PR-#4 feedforward can slot in at the marked
-    seam (right after the failsafe) and *bypass* the deadband + rate-limit gates below.
+    Shared by feedforward (an absolute jump) and trim (a proportional step). The achievable shift
+    interval is ``[temp_min - band_low, temp_max - band_high]``; it is only valid (lo <= hi) while
+    the current band itself fits inside the bounds, so guard the degenerate case first. Returns
+    ``set_band=False`` with a diagnostic reason when the band is degenerate or already at the bound.
+    Carries no ``new_offset`` (neither feedforward nor trim learns).
     """
-    # Failsafe: never drive HVAC off a missing or stale reading.
+    lo_step = config.temp_min - inputs.band_low
+    hi_step = config.temp_max - inputs.band_high
+    if inputs.band_low > inputs.band_high or lo_step > hi_step:
+        return Action(set_band=False, reason="band_out_of_bounds")
+    effective = _clamp(shift, lo_step, hi_step)
+    if effective == 0:
+        return Action(set_band=False, reason="at_temp_bound")
+    return Action(
+        set_band=True,
+        band_low=inputs.band_low + effective,
+        band_high=inputs.band_high + effective,
+        reason=reason,
+    )
+
+
+def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
+    """Return the next :class:`Action` for one control tick (pure; see module docstring)."""
+    # Failsafe: never drive HVAC off a missing or stale reading (and never learn from one).
     if not inputs.available:
         return Action(
             set_band=False,
@@ -108,36 +151,27 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
             reason="failsafe",
         )
 
-    # --- FEEDFORWARD SEAM (PR #4) ---
-    # The jump-on-change (target/schedule change -> command target ± learned_offset immediately)
-    # belongs here: after the failsafe, before the gates below, which it must bypass.
-
     error = inputs.target - inputs.house_average
+    band_center = (inputs.band_low + inputs.band_high) / 2.0
+
+    # FEEDFORWARD: on a target change, jump the band so band_center = target + learned_offset,
+    # bypassing the deadband + rate-limit gates for a fast recovery. Uses the established
+    # (pre-update) offset; we never learn on this transient tick.
+    if inputs.target != inputs.last_target:
+        shift = (inputs.target + inputs.learned_offset) - band_center
+        return _shift_band(inputs, config, shift, "feedforward")
+
     if abs(error) <= config.deadband:
-        return Action(set_band=False, reason="within_deadband")
+        # Settled at target — the ONLY place we learn. Nudge K toward (band_center - house_average)
+        # with a slow EMA. Gating on the deadband means the house is never sampled mid-recovery.
+        new_offset = inputs.learned_offset + config.offset_alpha * (
+            (band_center - inputs.house_average) - inputs.learned_offset
+        )
+        return Action(set_band=False, reason="within_deadband", new_offset=new_offset)
 
     if inputs.now_ts - inputs.last_change_ts < config.min_period_s:
         return Action(set_band=False, reason="rate_limited")
 
-    # Gap-preserving shift: move both band edges by the same step so the heat/cool gap is kept,
-    # while neither edge leaves [temp_min, temp_max]. The achievable step interval is
-    # [temp_min - band_low, temp_max - band_high]; it is only valid (lo <= hi) while the current
-    # band itself fits inside the equipment bounds. Guard the degenerate case so the clamp below
-    # can never invert.
-    lo_step = config.temp_min - inputs.band_low
-    hi_step = config.temp_max - inputs.band_high
-    if inputs.band_low > inputs.band_high or lo_step > hi_step:
-        return Action(set_band=False, reason="band_out_of_bounds")
-
-    # Integral step: ADD kp*error onto the current band (not an absolute setpoint — see module doc).
+    # Integral trim: ADD kp*error onto the current band (not an absolute setpoint — see module doc).
     desired_step = _clamp(config.kp * error, -config.max_step, config.max_step)
-    effective_step = _clamp(desired_step, lo_step, hi_step)
-    if effective_step == 0:
-        return Action(set_band=False, reason="at_temp_bound")
-
-    return Action(
-        set_band=True,
-        band_low=inputs.band_low + effective_step,
-        band_high=inputs.band_high + effective_step,
-        reason="trim",
-    )
+    return _shift_band(inputs, config, desired_step, "trim")
