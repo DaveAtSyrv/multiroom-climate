@@ -160,7 +160,16 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        desired≠current already prevent thrash). **Known v1 limitation:** we can't distinguish a user's
        manual `on` from our own, so a user-set `on` is returned to `auto` once spread drops (a
        provenance flag is v2).
-7. ⬜ Optimal-start + day/night setback wiring.
+7. Optimal-start + day/night setback:
+   - 7a. ✅ Pure `scheduled_target(now_minutes, config)` — day/night setpoint by minutes-since-local-
+     midnight, with a fixed optimal-start lead that pulls **both** transitions earlier (the night
+     setback begins the lead early too — a deliberate v1 simplification; occupancy-aware start is v2).
+     Half-open arc, wraparound-safe. No caller yet (pure-first, like `decide()` in #3/#4). (#19)
+   - 7b. ⬜ Schedule config (day/night temps + start times + lead) via an options flow.
+   - 7c. ⬜ Wire into the coordinator: convert HA local wall-clock → minutes (`dt_util.now()`, NOT
+     `utcnow()`); on a *change* in `scheduled_target` vs last tick, re-assert the target via
+     `async_set_target` (compare-to-last so a mid-period manual hold survives until the next
+     transition). Gated off when no schedule is configured.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
    default store. (v2: direct Skyport API + reauth.)
 

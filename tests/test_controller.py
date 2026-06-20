@@ -12,6 +12,7 @@ from custom_components.multiroom_climate.controller import (
     ControllerInputs,
     decide,
     decide_fan,
+    scheduled_target,
 )
 
 CFG = ControllerConfig(deadband=0.5, kp=0.3, max_step=0.5, min_period_s=720.0, temp_min=7.0, temp_max=35.0)
@@ -342,3 +343,62 @@ def test_fan_hysteresis_band_holds_either_state():
     assert decide_fan(1.5, circulating=False, config=_FAN_CFG).set_fan is False
     on = decide_fan(1.5, circulating=True, config=_FAN_CFG)
     assert on.set_fan is False and on.reason == "within_hysteresis"
+
+
+# --- day/night schedule + optimal start (pure scheduled_target) -------------
+
+# Day 06:00 (360) → 22:00 (1320); lead 0 unless a test overrides it. day=70, night=62 (°F-like).
+_SCHED_CFG = replace(
+    CFG, day_start_min=360.0, night_start_min=1320.0, day_temp=70.0, night_temp=62.0,
+    optimal_start_lead_min=0.0,
+)
+
+_NOON = 12 * 60.0
+_MIDNIGHT_OH_TWO = 2 * 60.0
+
+
+def test_schedule_day_period_returns_day_temp():
+    assert scheduled_target(_NOON, _SCHED_CFG) == 70.0
+
+
+def test_schedule_night_period_returns_night_temp():
+    assert scheduled_target(_MIDNIGHT_OH_TWO, _SCHED_CFG) == 62.0  # 02:00 is in the night arc
+
+
+def test_schedule_boundary_is_half_open_at_day_start():
+    # Exactly at day_start (06:00) → day; one minute before → still night. (Half-open [start, end).)
+    assert scheduled_target(360.0, _SCHED_CFG) == 70.0
+    assert scheduled_target(359.0, _SCHED_CFG) == 62.0
+
+
+def test_schedule_boundary_is_half_open_at_night_start():
+    assert scheduled_target(1320.0, _SCHED_CFG) == 62.0  # 22:00 → night
+    assert scheduled_target(1319.0, _SCHED_CFG) == 70.0  # 21:59 → still day
+
+
+def test_optimal_start_pulls_day_transition_earlier():
+    cfg = replace(_SCHED_CFG, optimal_start_lead_min=45.0)
+    # 05:30 (330) is before 06:00 but within the 45-min lead → already conditioning to day_temp.
+    assert scheduled_target(330.0, cfg) == 70.0
+    # 05:10 (310) is more than 45 min early → still night.
+    assert scheduled_target(310.0, cfg) == 62.0
+
+
+def test_optimal_start_pulls_night_transition_earlier_too():
+    # The documented v1 symmetry: the setback also begins the lead early.
+    cfg = replace(_SCHED_CFG, optimal_start_lead_min=45.0)
+    assert scheduled_target(1290.0, cfg) == 62.0  # 21:30 → already setting back (1320−45=1275)
+
+
+def test_schedule_degenerate_equal_starts_is_all_night():
+    # day_start == night_start → no day window → night_temp everywhere (a sane degenerate result).
+    cfg = replace(_SCHED_CFG, day_start_min=480.0, night_start_min=480.0)
+    assert scheduled_target(_NOON, cfg) == 62.0
+    assert scheduled_target(0.0, cfg) == 62.0
+
+
+def test_schedule_lead_larger_than_window_resolves_via_modular_arithmetic():
+    # A lead wider than a window still resolves cleanly. lead 600: day_start=(360−600)%1440=1200,
+    # night_start=(1320−600)%1440=720; at noon (720) the day arc [1200,720) wraps and excludes it.
+    cfg = replace(_SCHED_CFG, optimal_start_lead_min=600.0)
+    assert scheduled_target(_NOON, cfg) == 62.0

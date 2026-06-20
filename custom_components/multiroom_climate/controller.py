@@ -88,6 +88,22 @@ class ControllerConfig:
     """Spread at/below which the fan returns to auto. The gap to ``fan_spread_high`` is the
     hysteresis that prevents the fan thrashing on/off near a single threshold."""
 
+    day_start_min: float = 360.0
+    """Day period start, minutes since local midnight (default 06:00). Caller converts wall-clock."""
+
+    night_start_min: float = 1320.0
+    """Night (setback) period start, minutes since local midnight (default 22:00)."""
+
+    day_temp: float = 21.0
+    """Target held during the day period (caller's unit). Placeholder until a schedule is configured."""
+
+    night_temp: float = 18.0
+    """Target held during the night setback (caller's unit)."""
+
+    optimal_start_lead_min: float = 45.0
+    """Fixed optimal-start lead: pull each transition this many minutes earlier so the house reaches
+    the new setpoint by its scheduled time."""
+
 
 @dataclass(frozen=True)
 class ControllerInputs:
@@ -258,3 +274,29 @@ def decide_fan(spread: float | None, circulating: bool, config: ControllerConfig
     else:
         return FanAction(set_fan=False, reason="within_hysteresis")
     return FanAction(set_fan=desired != circulating, circulate=desired, reason=reason)
+
+
+def _in_arc(now: float, start: float, end: float) -> bool:
+    """Whether ``now`` lies in the half-open arc ``[start, end)`` on a circular 1440-minute clock.
+
+    ``start <= end`` is the ordinary case; otherwise the arc wraps past midnight (e.g. a night that
+    runs 22:00→06:00). Half-open so an exact-boundary ``now == start`` belongs to this arc.
+    """
+    if start <= end:
+        return start <= now < end
+    return now >= start or now < end
+
+
+def scheduled_target(now_minutes: float, config: ControllerConfig) -> float:
+    """The day/night setpoint active at ``now_minutes`` (minutes since local midnight), pure.
+
+    Optimal start pulls **both** transitions earlier by ``optimal_start_lead_min`` so the house
+    reaches each setpoint by its scheduled time. The night setback therefore visibly begins the lead
+    early too — a deliberate v1 simplification (the integration can't know which period is occupied;
+    occupancy-aware start is v2). The caller converts HA local wall-clock to minutes and decides
+    whether a schedule is configured at all (an unconfigured schedule never calls this).
+    """
+    lead = config.optimal_start_lead_min
+    day_start = (config.day_start_min - lead) % 1440.0
+    night_start = (config.night_start_min - lead) % 1440.0
+    return config.day_temp if _in_arc(now_minutes, day_start, night_start) else config.night_temp
