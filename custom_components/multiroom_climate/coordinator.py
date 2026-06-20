@@ -167,8 +167,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._last_target: float | None = None
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
-        # Whether the target was picked by the user (vs auto-seeded). A user target is kept across an
-        # enable toggle; an auto-seeded one is re-seeded to "now" (see set_enabled).
+        # Whether the target was explicitly set (via async_set_target — a user today, a schedule in
+        # step 7) vs auto-seeded. An explicit target is kept across an enable toggle; an auto-seeded
+        # one is re-seeded to "now" (see set_enabled).
         self._target_user_set: bool = False
 
         # Master enable (the kill switch). Default off: a fresh install is inert until the user opts
@@ -179,8 +180,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         """Restore persisted control state before the first refresh.
 
         Restoring ``target`` means we don't re-seed it to the current house average on restart.
-        Restoring ``last_target`` keeps the feedforward gate sound once 5d makes the target
-        user-settable — today the two are always equal, so feedforward is inert either way.
+        Restoring ``last_target`` (which a user target change deliberately leaves behind, so a
+        feedforward can be pending) keeps the feedforward gate sound across the restart.
         """
         stored = await self._store.async_load()
         if not stored:
@@ -189,7 +190,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._target = stored.get("target")
         self._last_target = stored.get("last_target")
         self._last_change_ts = stored.get("last_change_ts", 0.0)
-        self._target_user_set = bool(stored.get("target_user_set", False))
+        self._target_user_set = stored.get("target_user_set", False)
 
     @callback
     def _persisted_state(self) -> dict[str, float | bool | None]:
@@ -209,10 +210,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     def set_enabled(self, enabled: bool, *, reseed: bool = True) -> None:
         """Flip the kill switch (the switch entity calls this).
 
-        A user toggle (``reseed=True``) re-seeds the target to the current house average on enable —
-        so turning control on means "hold where we are now" rather than jumping toward a possibly-
-        stale seed — while keeping the expensive learned offset. Restore-on-restart passes
-        ``reseed=False`` to resume regulating toward the persisted target it was already holding.
+        A user toggle (``reseed=True``) re-seeds an *auto-seeded* target to the current house average
+        on enable — so turning control on means "hold where we are now" rather than jumping toward a
+        possibly-stale seed — while keeping the expensive learned offset. An explicitly-set target is
+        kept. Restore-on-restart passes ``reseed=False`` to resume the persisted target as-is.
         Disabling just stops writing; the band is left as-is (already bias-compensated for current
         conditions), so the handback is clean.
         """

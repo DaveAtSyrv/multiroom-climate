@@ -101,8 +101,10 @@ class ControllerInputs:
     learned_offset: float
     """Persisted K = band_center - house_average at steady state (caller persists Action.new_offset)."""
 
-    last_target: float
-    """The target the caller last acted on; ``target != last_target`` triggers the feedforward jump."""
+    last_target: float | None
+    """The target the caller last acted on; ``target != last_target`` triggers the feedforward jump.
+    ``None`` before the caller has ever acted (or right after an explicit target change) — which
+    correctly reads as "changed" and fires feedforward."""
 
 
 @dataclass(frozen=True)
