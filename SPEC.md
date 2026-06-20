@@ -7,7 +7,7 @@ Status: **v1 design locked, build in progress.** This is the source of truth for
 A Daikin Skyport thermostat (`climate.daikin`) regulates to its **own** sensor, which runs warm
 relative to the rest of the house. The owner manually sets ~67°F to hold the house average ~70°F.
 The thermostat has no native multi-room / remote-sensor averaging. We want a Home Assistant
-integration that targets a **weighted house average** and auto-discovers/compensates that bias.
+integration that targets a **house average** and auto-discovers/compensates that bias.
 
 ## 2. Architecture
 
@@ -26,7 +26,7 @@ calls, so it's fully unit-testable and transport-agnostic — the same logic ser
 
 ## 3. v1 scope (locked)
 
-- Weighted **house-average** targeting (`current_temperature` = weighted avg of chosen sensors).
+- **House-average** targeting (`current_temperature` = average of chosen sensors).
 - **Auto-learned thermostat-bias offset** (the "67 to hold 70" fix), continuously updated.
 - **Feedforward jump** on any change + **proportional** step when far + **slow trim** when close.
 - **Automatic heat/cool changeover** via band-shift in AUTO (equipment owns compressor protection).
@@ -106,7 +106,7 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
 2. ✅ **`controller.py` + `test_controller.py`** — the pure engine (offset learn, band-shift, trim,
    feedforward, failsafe). Highest value, fully unit-testable, no HA needed. (#3, #4)
 3. ✅ `config_flow.py` + strings/translations. (`OptionsFlow` deferred to a later PR.) (#5)
-4. ✅ `coordinator.py` (read sensors → weighted house average + mirror wrapped HVAC mode). (#6)
+4. ✅ `coordinator.py` (read sensors → house average + mirror wrapped HVAC mode). (#6)
 5. `climate.py` — landed as small CLs to keep actuation honest (no confusing no-op half-states):
    - 5a. ✅ Read-only observe layer: `current_temperature` = house avg, mirror wrapped HVAC mode,
      no writes / no setpoint features. (#6)

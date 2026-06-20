@@ -2,8 +2,8 @@
 
 **Multi-room comfort for Daikin Skyport — in Home Assistant.**
 
-A custom Home Assistant integration that adds a smart thermostat which regulates your home to a
-**weighted average of the rooms you choose** instead of the single (often warm) thermostat sensor.
+A custom Home Assistant integration that adds a smart thermostat which regulates your home to an
+**average of the rooms you choose** instead of the single (often warm) thermostat sensor.
 It automatically learns the bias between the thermostat's own sensor and your house average — so the
 manual "set it to 67 to hold the house at 70" trick becomes automatic and self-adjusting.
 
@@ -13,7 +13,7 @@ manual "set it to 67 to hold the house at 70" trick becomes automatic and self-a
 
 ## What it does
 
-- Targets a **weighted house-average temperature**, not the thermostat's own sensor.
+- Targets a **house-average temperature**, not the thermostat's own sensor.
 - **Auto-learns the thermostat-sensor bias** and compensates continuously.
 - **Feedforward + proportional trim** control: jumps fast on changes, holds gently at steady state.
 - **Automatic heat/cool changeover** by sliding the thermostat's AUTO band (the equipment keeps its
@@ -43,7 +43,7 @@ directory and restart.
 1. **Settings → Devices & Services → Add Integration → Multiroom Climate.**
 2. Choose:
    - **Thermostat to control** — the `climate.*` entity to drive (kept in its AUTO band).
-   - **Target temperature sensors** — the room sensors whose weighted average is the temperature to
+   - **Target temperature sensors** — the room sensors whose average is the temperature to
      hold (pick one or more).
    - **Humidity sensor** *(optional)* — enables a slight cooling-season overcool while humidity is
      above target.

@@ -113,7 +113,7 @@ class ControllerInputs:
     """Whether the target sensor(s) are fresh and usable. False triggers the failsafe."""
 
     house_average: float
-    """The remote weighted-average temperature we regulate."""
+    """The remote average temperature we regulate."""
 
     target: float
     """The active target, already resolved (day/night selection is the caller's job)."""

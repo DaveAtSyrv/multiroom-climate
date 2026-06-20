@@ -1,6 +1,6 @@
-"""Climate entity: the user-facing thermostat for the weighted house average.
+"""Climate entity: the user-facing thermostat for the house average.
 
-``current_temperature`` is the weighted house average and ``target_temperature`` is the single
+``current_temperature`` is the house average and ``target_temperature`` is the single
 temperature to hold it at; setting it hands the new target to the coordinator, which slides the
 wrapped thermostat's AUTO band to reach it (when the master switch is on). HVAC mode mirrors the
 wrapped thermostat. The single setpoint is deliberate — the wrapped band is the coordinator's
@@ -75,7 +75,7 @@ class MultiroomClimateEntity(
 
     @property
     def current_temperature(self) -> float | None:
-        """The weighted house average the controller regulates toward."""
+        """The house average the controller regulates toward."""
         return self.coordinator.data.house_average
 
     @property

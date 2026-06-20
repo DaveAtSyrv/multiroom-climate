@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Multiroom Climate",
-        "description": "Regulate your home to a weighted average of room sensors by wrapping an existing thermostat.",
+        "description": "Regulate your home to an average of room sensors by wrapping an existing thermostat.",
         "data": {
           "name": "Name",
           "climate_entity": "Thermostat to control",
@@ -12,7 +12,7 @@
         },
         "data_description": {
           "climate_entity": "The thermostat this controller will drive (kept in its AUTO band).",
-          "target_sensors": "The room sensors whose weighted average is the temperature to hold.",
+          "target_sensors": "The room sensors whose average is the temperature to hold.",
           "humidity_sensor": "Optional. When set, cooling overcools slightly while humidity is above target to wring out moisture."
         }
       },
