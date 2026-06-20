@@ -229,3 +229,54 @@ async def test_trim_clamped_to_equipment_max_temp(hass: HomeAssistant) -> None:
     assert data.proposed.reason == "trim"
     assert data.proposed.band_high == pytest.approx(69.3)
     assert data.proposed.band_low == pytest.approx(67.3)
+
+
+async def test_failsafe_after_sensor_loss(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # tick 1: seed target, learn offset
+    learned = coordinator._learned_offset
+    hass.states.async_set("sensor.a", "unavailable")  # lose the only sensor
+    data = await coordinator._async_update_data()  # tick 2
+
+    assert data.house_average is None
+    assert data.status == "failsafe"
+    assert data.proposed is not None
+    assert data.proposed.set_band is False
+    assert data.proposed.notify  # would-notify text, surfaced but not delivered
+    assert data.target == 70.0  # target retained across the dropout
+    assert coordinator._learned_offset == learned  # never learn off a missing reading
+
+
+async def test_waiting_for_first_reading(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "unavailable")  # no fresh reading yet
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    # Never regulated → this is "waiting", not a failsafe; target stays unseeded.
+    assert data.status == "waiting_for_first_reading"
+    assert data.proposed is None
+    assert data.target is None
+
+
+async def test_partial_staleness_regulates_off_survivors(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.b", "unavailable")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+
+    data = await coordinator._async_update_data()
+
+    # One sensor down doesn't freeze the HVAC — regulate off the survivor, but show the degradation.
+    assert data.house_average == 70.0
+    assert data.fresh_sensors == 1
+    assert data.total_sensors == 2
+    assert data.proposed is not None
+    assert data.status == "within_deadband"

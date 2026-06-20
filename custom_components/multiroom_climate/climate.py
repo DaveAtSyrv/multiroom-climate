@@ -50,8 +50,12 @@ class MultiroomClimateEntity(
 
     @property
     def available(self) -> bool:
-        """Available only when the coordinator has a usable house average."""
-        return super().available and self.coordinator.data.available
+        """Available while the wrapped thermostat is reachable — not gated on sensor freshness, so
+        the failsafe/status stays visible when sensors go stale.
+
+        ``current_temperature`` simply reports ``None`` (unknown) when no sensor is fresh.
+        """
+        return super().available and self.coordinator.data.thermostat_present
 
     @property
     def current_temperature(self) -> float | None:
@@ -69,22 +73,28 @@ class MultiroomClimateEntity(
         return list(self.coordinator.data.hvac_modes)
 
     @property
-    def extra_state_attributes(self) -> dict[str, float | str | None]:
+    def extra_state_attributes(self) -> dict[str, float | int | str | None]:
         """Surface the wrapped band and the controller's shadow decision for observability.
 
-        ``band_low``/``band_high`` are the thermostat's current AUTO band. The ``shadow_*`` keys are
-        what the controller *would* do this tick (target it's holding, learned bias offset, and the
-        band it would propose) — nothing is written to the thermostat yet.
+        ``band_low``/``band_high`` are the thermostat's current AUTO band. ``shadow_status`` is what
+        the controller is doing (or why it isn't), ``shadow_sensors_*`` expose sensor degradation,
+        and the remaining ``shadow_*`` keys are what it *would* do — the target it holds, learned
+        bias offset, the band it would propose, and the message it would send. Nothing is written.
         """
         data = self.coordinator.data
-        attrs: dict[str, float | str | None] = {
+        attrs: dict[str, float | int | str | None] = {
             "band_low": data.band_low,
             "band_high": data.band_high,
+            "shadow_status": data.status,
+            "shadow_sensors_fresh": data.fresh_sensors,
+            "shadow_sensors_total": data.total_sensors,
             "shadow_target": data.target,
             "shadow_learned_offset": round(data.learned_offset, 2),
         }
-        if data.proposed is not None:
-            attrs["shadow_action"] = data.proposed.reason
-            attrs["shadow_proposed_band_low"] = data.proposed.band_low
-            attrs["shadow_proposed_band_high"] = data.proposed.band_high
+        proposed = data.proposed
+        if proposed is not None and proposed.set_band:
+            attrs["shadow_proposed_band_low"] = proposed.band_low
+            attrs["shadow_proposed_band_high"] = proposed.band_high
+        if proposed is not None and proposed.notify:
+            attrs["shadow_notify"] = proposed.notify
         return attrs
