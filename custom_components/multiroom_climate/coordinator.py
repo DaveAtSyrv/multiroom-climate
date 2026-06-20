@@ -1,33 +1,35 @@
 """Coordinator: poll the target sensors + wrapped thermostat, run the controller in shadow.
 
 Per SPEC §5 the coordinator owns *all* the reads each tick — the room sensors (for the weighted
-house average) and the wrapped thermostat (its HVAC mode + AUTO band). It also runs the pure
-``controller.decide()`` each tick and records the proposed ``Action`` **without writing anything to
-the thermostat** (SPEC §6 step 5c, shadow mode). Actuation (turning the proposal into a real
-``climate.set_temperature``) plus durable persistence land in the next PR; here the control state
-(learned offset, last target/change) lives in memory and the only output is observability.
+house average) and the wrapped thermostat (its HVAC mode, AUTO band, and temperature bounds). It
+also runs the pure ``controller.decide()`` each tick and records the proposed ``Action`` **without
+writing anything to the thermostat** (SPEC §6 step 5c, shadow mode). Actuation (turning the proposal
+into a real ``climate.set_temperature``) plus durable persistence land in later PRs; here the
+control state (learned offset, last target/change) lives in memory and the only output is
+observability.
 
 Entities render ``CoordinatorData``; they never reach around the coordinator to read state directly.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
 
 from homeassistant.components.climate import (
+    ATTR_MAX_TEMP,
+    ATTR_MIN_TEMP,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfTemperature
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import convert
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import CONF_CLIMATE_ENTITY, CONF_TARGET_SENSORS, DOMAIN
 from .controller import Action, ControllerConfig, ControllerInputs, decide
@@ -50,6 +52,22 @@ def _to_hvac_mode(value: str) -> HVACMode | None:
         return HVACMode(value)
     except ValueError:
         return None
+
+
+@dataclass(frozen=True)
+class _WrappedReading:
+    """One read of the wrapped thermostat: its mode, advertised modes, AUTO band, and temp bounds.
+
+    Every field is ``None`` (or empty) when the thermostat is missing/unavailable or — for the band
+    and bounds — when the current mode doesn't advertise them.
+    """
+
+    hvac_mode: HVACMode | None
+    hvac_modes: tuple[HVACMode, ...]
+    band_low: float | None
+    band_high: float | None
+    temp_min: float | None
+    temp_max: float | None
 
 
 @dataclass(frozen=True)
@@ -91,16 +109,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._sensors: list[str] = entry.data[CONF_TARGET_SENSORS]
         self._wrapped: str = entry.data[CONF_CLIMATE_ENTITY]
 
-        # ControllerConfig's default safety bounds are in °C; convert them to the system unit so
-        # shadow proposals aren't clamped to nonsense on a °F system. (Sourcing the bounds from the
-        # wrapped thermostat's own min_temp/max_temp is a 5d refinement — see SPEC §6.) The small
-        # per-tick deltas (deadband, max_step) stay unit-agnostic and are tuned live.
-        unit = hass.config.units.temperature_unit
-        defaults = ControllerConfig()
-        self._config = ControllerConfig(
-            temp_min=TemperatureConverter.convert(defaults.temp_min, UnitOfTemperature.CELSIUS, unit),
-            temp_max=TemperatureConverter.convert(defaults.temp_max, UnitOfTemperature.CELSIUS, unit),
-        )
+        # Base tunables (deadband, gain, rate limit, EMA). The safety bounds (temp_min/temp_max) are
+        # overridden each tick from the wrapped thermostat's own min_temp/max_temp — already in the
+        # system unit and correct for the actual equipment — so the defaults here are just a base.
+        self._config = ControllerConfig()
 
         # Shadow control state (in-memory; durable persistence lands with actuation).
         self._target: float | None = None
@@ -119,10 +131,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 temps.append(value)
         return house_average(temps)
 
-    def _read_wrapped(self) -> tuple[HVACMode | None, tuple[HVACMode, ...], float | None, float | None]:
+    def _read_wrapped(self) -> _WrappedReading:
         wrapped = self.hass.states.get(self._wrapped)
         if wrapped is None:
-            return None, (), None, None
+            return _WrappedReading(None, (), None, None, None, None)
         hvac_mode = (
             _to_hvac_mode(wrapped.state)
             if wrapped.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
@@ -133,16 +145,20 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             for mode in (_to_hvac_mode(v) for v in wrapped.attributes.get("hvac_modes", []))
             if mode is not None
         )
-        band_low = convert(wrapped.attributes.get(ATTR_TARGET_TEMP_LOW), float)
-        band_high = convert(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH), float)
-        return hvac_mode, hvac_modes, band_low, band_high
+        return _WrappedReading(
+            hvac_mode=hvac_mode,
+            hvac_modes=hvac_modes,
+            band_low=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_LOW), float),
+            band_high=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH), float),
+            temp_min=convert(wrapped.attributes.get(ATTR_MIN_TEMP), float),
+            temp_max=convert(wrapped.attributes.get(ATTR_MAX_TEMP), float),
+        )
 
-    def _shadow_decide(
-        self, house_avg: float, band_low: float, band_high: float
-    ) -> Action:
+    def _shadow_decide(self, house_avg: float, wrapped: _WrappedReading) -> Action:
         """Run the real ``decide()`` and advance the control state as actuation will — except for
         the write. Persisting ``new_offset`` and stamping ``last_change_ts`` on a proposed band keep
-        the rate limit and offset EMA behaving as they will once we actuate.
+        the rate limit and offset EMA behaving as they will once we actuate. The safety bounds come
+        from the wrapped thermostat's own min/max for this tick.
 
         Two things are *not* exercised in shadow, by construction:
         - **Open-loop:** because nothing is written, the band never moves and the house never
@@ -160,20 +176,21 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             self._target = house_avg
             self._last_target = house_avg
 
+        config = replace(self._config, temp_min=wrapped.temp_min, temp_max=wrapped.temp_max)
         now_ts = dt_util.utcnow().timestamp()
         action = decide(
             ControllerInputs(
                 available=True,
                 house_average=house_avg,
                 target=self._target,
-                band_low=band_low,
-                band_high=band_high,
+                band_low=wrapped.band_low,
+                band_high=wrapped.band_high,
                 now_ts=now_ts,
                 last_change_ts=self._last_change_ts,
                 learned_offset=self._learned_offset,
                 last_target=self._last_target,
             ),
-            self._config,
+            config,
         )
         if action.new_offset is not None:
             self._learned_offset = action.new_offset
@@ -184,18 +201,26 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
 
     async def _async_update_data(self) -> CoordinatorData:
         house_avg = self._read_house_average()
-        hvac_mode, hvac_modes, band_low, band_high = self._read_wrapped()
+        wrapped = self._read_wrapped()
 
+        # decide() needs a full AUTO band AND the equipment's temp bounds to clamp safely; without
+        # either we can't (and at 5d won't) act, so skip it rather than guess.
         proposed: Action | None = None
-        if house_avg is not None and band_low is not None and band_high is not None:
-            proposed = self._shadow_decide(house_avg, band_low, band_high)
+        if (
+            house_avg is not None
+            and wrapped.band_low is not None
+            and wrapped.band_high is not None
+            and wrapped.temp_min is not None
+            and wrapped.temp_max is not None
+        ):
+            proposed = self._shadow_decide(house_avg, wrapped)
 
         return CoordinatorData(
             house_average=house_avg,
-            hvac_mode=hvac_mode,
-            hvac_modes=hvac_modes,
-            band_low=band_low,
-            band_high=band_high,
+            hvac_mode=wrapped.hvac_mode,
+            hvac_modes=wrapped.hvac_modes,
+            band_low=wrapped.band_low,
+            band_high=wrapped.band_high,
             target=self._target,
             learned_offset=self._learned_offset,
             proposed=proposed,

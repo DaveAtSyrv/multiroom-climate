@@ -81,7 +81,13 @@ async def test_exposes_shadow_decision_attributes(
     hass.states.async_set(
         "climate.daikin",
         "heat_cool",
-        {"hvac_modes": ["off", "heat_cool"], "target_temp_low": 67.0, "target_temp_high": 69.0},
+        {
+            "hvac_modes": ["off", "heat_cool"],
+            "target_temp_low": 67.0,
+            "target_temp_high": 69.0,
+            "min_temp": 45.0,
+            "max_temp": 95.0,
+        },
     )
 
     entity_id = await _setup(hass)

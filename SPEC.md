@@ -109,15 +109,20 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
    - 5c. ✅ Shadow mode — coordinator runs `controller.decide()` each tick against the live inputs
      (stateful: learned offset, last target/change, all in-memory) and exposes the *proposed*
      band + learned offset + target as `shadow_*` attributes. Writes nothing. (#8)
-   - 5d. ⬜ **NEXT:** actuate — flip shadow → real `climate.set_temperature`; add `RestoreEntity`/
-     `Store` for the learned offset + last target, a settable target (resolve single-vs-range HA
-     modeling — verify against Versatile Thermostat's `over_climate`), and the master kill switch.
-     Must also (carried from shadow-mode review): (a) **source band bounds from the wrapped entity's
-     `min_temp`/`max_temp`** (system-unit, correct for any equipment) and delete the °C-default
-     conversion scaffolding in the coordinator; (b) **wire availability + failsafe** — compute
-     `ControllerInputs.available` (don't hardcode True), route `decide()`'s failsafe *notify* on
-     stale/missing sensors (today the coordinator freezes silently), and decide all-vs-any partial-
-     staleness policy so a write path can't regulate off one surviving sensor with no failsafe.
+   - 5d. Actuate — decomposed into small CLs so the first PR that *writes to the real thermostat*
+     is minimal and all its scaffolding is reviewed first:
+     - 5d-1. ✅ Source the controller's safety bounds from the wrapped entity's `min_temp`/`max_temp`
+       (system-unit, any equipment); gate `decide()` on bounds present; delete the °C-default
+       conversion scaffolding. Still no writes. (#9)
+     - 5d-2. ⬜ **NEXT:** availability + failsafe — compute `ControllerInputs.available` (don't
+       hardcode True), route `decide()`'s failsafe *notify* on stale/missing sensors (today the
+       coordinator freezes silently), and decide the all-vs-any partial-staleness policy so a write
+       path can't regulate off one surviving sensor with no failsafe. Still no writes.
+     - 5d-3. ⬜ Durable persistence (`Store`/`RestoreEntity`) for learned offset + last target/change
+       so the learned bias survives restarts before it drives anything. Still no writes.
+     - 5d-4. ⬜ The flip — settable target (resolve single-vs-range HA modeling, verify against
+       Versatile Thermostat's `over_climate`) + real `climate.set_temperature` + master kill switch.
+       Advisor consult before building (first real writes).
 6. ⬜ Humidity bias + fan-circulate layers.
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS

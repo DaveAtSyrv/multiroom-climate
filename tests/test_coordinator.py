@@ -131,8 +131,16 @@ async def test_band_none_when_setpoints_absent(hass: HomeAssistant) -> None:
     assert data.band_high is None
 
 
-def _heat_cool(low: float, high: float) -> tuple[str, dict]:
-    return "heat_cool", {"hvac_modes": ["off", "heat_cool"], "target_temp_low": low, "target_temp_high": high}
+def _heat_cool(
+    low: float, high: float, *, min_temp: float = 45.0, max_temp: float = 95.0
+) -> tuple[str, dict]:
+    return "heat_cool", {
+        "hvac_modes": ["off", "heat_cool"],
+        "target_temp_low": low,
+        "target_temp_high": high,
+        "min_temp": min_temp,
+        "max_temp": max_temp,
+    }
 
 
 async def test_shadow_seeds_target_and_learns_offset_when_settled(hass: HomeAssistant) -> None:
@@ -183,3 +191,41 @@ async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:
     assert data.proposed is None
     assert data.target is None
     assert data.learned_offset == 0.0
+
+
+async def test_shadow_skipped_without_equipment_bounds(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    # Band present but the thermostat advertises no min_temp/max_temp → can't clamp safely → skip.
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {"hvac_modes": ["off", "heat_cool"], "target_temp_low": 67.0, "target_temp_high": 69.0},
+    )
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.proposed is None
+    # The band is still surfaced for observability even when decide() is skipped.
+    assert data.band_low == 67.0
+    assert data.band_high == 69.0
+
+
+async def test_trim_clamped_to_equipment_max_temp(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    # Equipment max is only 0.3 above the cool setpoint, so an upward trim can move at most 0.3 —
+    # proving the bound comes from the thermostat's own max_temp, not the °C default (which would
+    # allow the full 0.5 step).
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0, max_temp=69.3))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # tick 1 seeds target = 70
+    hass.states.async_set("sensor.a", "60.0")  # cold → upward trim demanded
+    data = await coordinator._async_update_data()
+
+    assert data.proposed is not None
+    assert data.proposed.reason == "trim"
+    assert data.proposed.band_high == pytest.approx(69.3)
+    assert data.proposed.band_low == pytest.approx(67.3)
