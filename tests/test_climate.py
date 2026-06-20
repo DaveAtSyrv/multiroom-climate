@@ -96,7 +96,9 @@ async def test_exposes_shadow_decision_attributes(
     assert state is not None
     # Shadow outputs are surfaced for observability; nothing is written to the thermostat.
     assert state.attributes["shadow_target"] == 70.0
-    assert state.attributes["shadow_action"] == "within_deadband"
+    assert state.attributes["shadow_status"] == "within_deadband"
+    assert state.attributes["shadow_sensors_fresh"] == 2
+    assert state.attributes["shadow_sensors_total"] == 2
     assert "shadow_learned_offset" in state.attributes
     assert hass.states.get("climate.daikin").state == "heat_cool"
 
@@ -118,12 +120,43 @@ async def test_reports_in_system_unit(
     assert state.attributes["current_temperature"] == 70.0
 
 
-async def test_unavailable_when_no_sensor_readings(
+async def test_available_with_stale_sensors_when_thermostat_present(
     hass: HomeAssistant, enable_custom_integrations
 ) -> None:
+    # No fresh sensors but the thermostat is reachable: the entity stays available (so its status is
+    # visible) with an unknown current_temperature, rather than vanishing.
+    hass.config.units = US_CUSTOMARY_SYSTEM
     hass.states.async_set("sensor.living_room", "unavailable")
     hass.states.async_set("sensor.kitchen", "unknown")
-    hass.states.async_set("climate.daikin", "off", {"hvac_modes": ["off", "heat_cool"]})
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {
+            "hvac_modes": ["off", "heat_cool"],
+            "target_temp_low": 67.0,
+            "target_temp_high": 69.0,
+            "min_temp": 45.0,
+            "max_temp": 95.0,
+        },
+    )
+
+    entity_id = await _setup(hass)
+    state = hass.states.get(entity_id)
+
+    assert state is not None
+    assert state.state == HVACMode.HEAT_COOL
+    assert state.attributes.get("current_temperature") is None
+    # Never regulated yet (no reading), so it's waiting rather than in failsafe.
+    assert state.attributes["shadow_status"] == "waiting_for_first_reading"
+    assert state.attributes["shadow_sensors_fresh"] == 0
+
+
+async def test_unavailable_when_thermostat_missing(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # The wrapped thermostat isn't in the state machine at all → nothing to observe or control.
+    hass.states.async_set("sensor.living_room", "20.0")
+    hass.states.async_set("sensor.kitchen", "24.0")
 
     entity_id = await _setup(hass)
     state = hass.states.get(entity_id)

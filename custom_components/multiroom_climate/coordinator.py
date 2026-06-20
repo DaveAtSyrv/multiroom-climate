@@ -3,10 +3,14 @@
 Per SPEC §5 the coordinator owns *all* the reads each tick — the room sensors (for the weighted
 house average) and the wrapped thermostat (its HVAC mode, AUTO band, and temperature bounds). It
 also runs the pure ``controller.decide()`` each tick and records the proposed ``Action`` **without
-writing anything to the thermostat** (SPEC §6 step 5c, shadow mode). Actuation (turning the proposal
-into a real ``climate.set_temperature``) plus durable persistence land in later PRs; here the
-control state (learned offset, last target/change) lives in memory and the only output is
-observability.
+writing anything to the thermostat** (SPEC §6 step 5c, shadow mode). Turning the proposal into a
+real ``climate.set_temperature`` plus durable persistence land in later PRs.
+
+Sensor availability + failsafe (SPEC §3/§4.8): a fresh weighted average needs at least one usable
+sensor. With *some* sensors stale we still regulate off the survivors (a transient dropout must not
+freeze the HVAC) and expose ``fresh/total`` so the degradation is visible. With *no* fresh sensor we
+hand ``available=False`` to ``decide()`` — but only once we were already regulating — so it returns
+the failsafe (freeze + a would-notify message); before the first-ever reading we simply wait.
 
 Entities render ``CoordinatorData``; they never reach around the coordinator to read state directly.
 """
@@ -36,6 +40,10 @@ from .controller import Action, ControllerConfig, ControllerInputs, decide
 
 _LOGGER = logging.getLogger(__name__)
 _UPDATE_INTERVAL = timedelta(seconds=60)
+
+# Status strings for the cases where decide() doesn't run (it owns its own reasons otherwise).
+_STATUS_NO_BAND = "no_thermostat_band"
+_STATUS_WAITING = "waiting_for_first_reading"
 
 
 def house_average(temps: list[float]) -> float | None:
@@ -69,6 +77,16 @@ class _WrappedReading:
     temp_min: float | None
     temp_max: float | None
 
+    @property
+    def present(self) -> bool:
+        """Whether the wrapped thermostat exists in a known HVAC mode (vs missing/unavailable)."""
+        return self.hvac_mode is not None
+
+    @property
+    def has_band_and_bounds(self) -> bool:
+        """Whether decide() can run: a full AUTO band plus the equipment's temp bounds to clamp to."""
+        return None not in (self.band_low, self.band_high, self.temp_min, self.temp_max)
+
 
 # The "thermostat missing/unavailable" reading — shareable because the dataclass is frozen.
 _NO_READING = _WrappedReading(
@@ -86,10 +104,10 @@ class CoordinatorData:
     """The regulated view computed each tick: the house average + the wrapped thermostat's state.
 
     ``band_low``/``band_high`` are the wrapped thermostat's current AUTO setpoints — the band the
-    controller will slide once actuation lands. They are ``None`` in single-setpoint modes
-    (heat/cool) or when the thermostat is gone, so actuation must skip ``decide()`` when either is
-    ``None`` rather than assume a band exists. ``target``/``learned_offset``/``proposed`` are the
-    shadow-mode outputs: what the controller *would* do, with nothing written.
+    controller will slide once actuation lands. ``target``/``learned_offset``/``proposed`` are the
+    shadow-mode outputs: what the controller *would* do, with nothing written. ``status`` is the
+    one-word reason for this tick (``decide()``'s reason, or why it didn't run); ``fresh_sensors``/
+    ``total_sensors`` expose sensor degradation; ``thermostat_present`` drives entity availability.
     """
 
     house_average: float | None
@@ -100,11 +118,10 @@ class CoordinatorData:
     target: float | None
     learned_offset: float
     proposed: Action | None
-
-    @property
-    def available(self) -> bool:
-        """Usable only when there's a house average to regulate toward."""
-        return self.house_average is not None
+    status: str
+    fresh_sensors: int
+    total_sensors: int
+    thermostat_present: bool
 
 
 class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
@@ -131,7 +148,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
 
-    def _read_house_average(self) -> float | None:
+    def _read_sensors(self) -> tuple[float | None, int]:
+        """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
         temps: list[float] = []
         for sensor in self._sensors:
             state = self.hass.states.get(sensor)
@@ -140,7 +158,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             value = convert(state.state, float)
             if value is not None:
                 temps.append(value)
-        return house_average(temps)
+        return house_average(temps), len(temps)
 
     def _read_wrapped(self) -> _WrappedReading:
         wrapped = self.hass.states.get(self._wrapped)
@@ -165,25 +183,48 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             temp_max=convert(wrapped.attributes.get(ATTR_MAX_TEMP), float),
         )
 
-    def _shadow_decide(self, house_avg: float, wrapped: _WrappedReading) -> Action:
+    def _evaluate(
+        self, house_avg: float | None, wrapped: _WrappedReading
+    ) -> tuple[Action | None, str]:
+        """Decide what (if anything) to propose this tick, with a status for observability.
+
+        Three cases once the thermostat advertises a band + bounds (else we can't act at all):
+        - a fresh house average → seed-if-needed and run the normal control tick;
+        - no fresh average but we were already regulating → ``decide(available=False)`` failsafe;
+        - no fresh average and never seeded → wait (skip *before* building ``ControllerInputs`` so a
+          ``None`` target can't reach the dataclass).
+        """
+        if not wrapped.has_band_and_bounds:
+            return None, _STATUS_NO_BAND
+        if house_avg is not None:
+            action = self._run_decide(house_avg, wrapped, available=True)
+            return action, action.reason
+        if self._target is not None:
+            # Was regulating, then lost every sensor → failsafe (house_average is a don't-care here).
+            action = self._run_decide(self._target, wrapped, available=False)
+            return action, action.reason
+        return None, _STATUS_WAITING
+
+    def _run_decide(
+        self, house_avg: float, wrapped: _WrappedReading, *, available: bool
+    ) -> Action:
         """Run the real ``decide()`` and advance the control state as actuation will — except for
         the write. Persisting ``new_offset`` and stamping ``last_change_ts`` on a proposed band keep
-        the rate limit and offset EMA behaving as they will once we actuate. The safety bounds come
-        from the wrapped thermostat's own min/max for this tick.
+        the rate limit and offset EMA behaving as they will once we actuate. Safety bounds come from
+        the wrapped thermostat's own min/max for this tick.
 
-        Two things are *not* exercised in shadow, by construction:
-        - **Open-loop:** because nothing is written, the band never moves and the house never
-          responds, so a sustained drift re-proposes the *same* trim each period rather than
-          converging. ``shadow_proposed_band_*`` is "current band ± one step", not a trajectory.
-        - **Feedforward:** the seeded target is constant here, so ``target != last_target`` never
-          holds. ``_last_target`` is wired for 5d, when the target becomes user-settable and a change
-          fires the feedforward jump.
-        What *does* run live is the within-deadband offset learning — the genuine "67-to-hold-70"
-        bias — which is the point of shadow mode and a good seed for 5d.
+        When ``available`` is False (lost all sensors mid-regulation) ``decide()`` short-circuits to
+        the failsafe: freeze + a would-notify message, no learning — so ``house_avg`` is unused and
+        the caller passes the retained target as a placeholder.
+
+        Not exercised in shadow, by construction: the loop is **open-loop** (nothing is written, so a
+        sustained drift re-proposes the *same* trim rather than converging), and **feedforward** never
+        fires (the seeded target is constant; ``_last_target`` is wired for 5d's settable target).
+        The within-deadband offset learning — the genuine "67-to-hold-70" bias — is what runs live.
         """
         # Seed the target to the current operating point so the within-deadband learning branch runs
         # from the first tick (the actual user-settable target arrives with actuation).
-        if self._target is None:
+        if available and self._target is None:
             self._target = house_avg
             self._last_target = house_avg
 
@@ -191,7 +232,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         now_ts = dt_util.utcnow().timestamp()
         action = decide(
             ControllerInputs(
-                available=True,
+                available=available,
                 house_average=house_avg,
                 target=self._target,
                 band_low=wrapped.band_low,
@@ -211,20 +252,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         return action
 
     async def _async_update_data(self) -> CoordinatorData:
-        house_avg = self._read_house_average()
+        house_avg, fresh = self._read_sensors()
         wrapped = self._read_wrapped()
-
-        # decide() needs a full AUTO band AND the equipment's temp bounds to clamp safely; without
-        # either we can't (and at 5d won't) act, so skip it rather than guess.
-        proposed: Action | None = None
-        if (
-            house_avg is not None
-            and wrapped.band_low is not None
-            and wrapped.band_high is not None
-            and wrapped.temp_min is not None
-            and wrapped.temp_max is not None
-        ):
-            proposed = self._shadow_decide(house_avg, wrapped)
+        proposed, status = self._evaluate(house_avg, wrapped)
 
         return CoordinatorData(
             house_average=house_avg,
@@ -235,6 +265,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             target=self._target,
             learned_offset=self._learned_offset,
             proposed=proposed,
+            status=status,
+            fresh_sensors=fresh,
+            total_sensors=len(self._sensors),
+            thermostat_present=wrapped.present,
         )
 
 

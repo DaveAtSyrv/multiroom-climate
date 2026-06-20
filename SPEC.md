@@ -114,10 +114,11 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
      - 5d-1. ✅ Source the controller's safety bounds from the wrapped entity's `min_temp`/`max_temp`
        (system-unit, any equipment); gate `decide()` on bounds present; delete the °C-default
        conversion scaffolding. Still no writes. (#9)
-     - 5d-2. ⬜ **NEXT:** availability + failsafe — compute `ControllerInputs.available` (don't
-       hardcode True), route `decide()`'s failsafe *notify* on stale/missing sensors (today the
-       coordinator freezes silently), and decide the all-vs-any partial-staleness policy so a write
-       path can't regulate off one surviving sensor with no failsafe. Still no writes.
+     - 5d-2. ✅ Availability + failsafe — staleness policy: ≥1 fresh sensor regulates off survivors
+       (exposes `fresh/total`); 0 fresh + already-regulating routes `decide(available=False)` →
+       failsafe freeze + a *would-notify* message (surfaced as an attribute, not yet delivered);
+       before the first reading it waits. Entity availability now follows the thermostat being
+       reachable (not sensor freshness) so the failsafe/status stays visible. Still no writes. (#10)
      - 5d-3. ⬜ Durable persistence (`Store`/`RestoreEntity`) for learned offset + last target/change
        so the learned bias survives restarts before it drives anything. Still no writes.
      - 5d-4. ⬜ The flip — settable target (resolve single-vs-range HA modeling, verify against
