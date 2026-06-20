@@ -23,3 +23,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # 'brands' is validated at publish time (we add brand assets + submit to
+          # home-assistant/brands when the repo goes public — see SPEC.md §6/§7).
+          ignore: brands
