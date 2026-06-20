@@ -1,0 +1,32 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    # The HACS action validates the repository's DEFAULT BRANCH (via the API), not the PR's
+    # checked-out files — so it can't pass on a PR that first introduces the integration. Run it
+    # on pushes to main + the nightly schedule instead; hassfest covers manifest checks on PRs.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # 'brands' is validated at publish time (we add brand assets + submit to
+          # home-assistant/brands when the repo goes public — see SPEC.md §6/§7).
+          ignore: brands
