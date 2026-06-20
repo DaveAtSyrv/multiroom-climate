@@ -1,7 +1,8 @@
-"""Tests for the read-only Multiroom Climate entity.
+"""Tests for the Multiroom Climate entity.
 
 Set the integration up through a real config entry and assert the entity surfaces the weighted
-house average, mirrors the wrapped thermostat, reports in the system unit, and writes nothing back.
+house average, mirrors the wrapped thermostat, reports in the system unit, and exposes a settable
+target. (Actuation/no-actuation behaviour is covered in test_coordinator.py.)
 """
 
 from __future__ import annotations
@@ -95,7 +96,7 @@ async def test_exposes_shadow_decision_attributes(
     state = hass.states.get(entity_id)
 
     assert state is not None
-    # Shadow outputs are surfaced for observability; nothing is written to the thermostat.
+    # The controller's decision is surfaced for observability; with the switch off, nothing is written.
     assert state.attributes["shadow_target"] == 70.0
     assert state.attributes["shadow_status"] == "within_deadband"
     assert state.attributes["shadow_sensors_fresh"] == 2

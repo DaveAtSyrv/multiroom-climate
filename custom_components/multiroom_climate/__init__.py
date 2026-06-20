@@ -3,8 +3,10 @@
 A Home Assistant smart thermostat that regulates the home to a weighted average of chosen room
 sensors and auto-learns the bias of the wrapped thermostat's own sensor. See SPEC.md.
 
-At this stage the climate entity is read-only — it observes the weighted house average and mirrors
-the wrapped thermostat. Driving the thermostat with controller.decide() lands in the next PR (SPEC §6).
+It forwards a ``climate`` entity (the house thermostat) and a ``switch`` entity (the master enable).
+With the switch on, the coordinator slides the wrapped thermostat's AUTO band to hold the house
+average at the target; with it off, the integration only observes. The control state persists across
+restarts, and removing the entry deletes that stored state.
 """
 
 from __future__ import annotations
