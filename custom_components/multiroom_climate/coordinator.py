@@ -63,6 +63,7 @@ from .controller import (
     FanAction,
     decide,
     decide_fan,
+    scheduled_target,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -225,6 +226,7 @@ class CoordinatorData:
     band_low: float | None
     band_high: float | None
     target: float | None
+    scheduled: float | None  # day/night setpoint for now (None = no schedule); drives the target at transitions
     learned_offset: float
     humidity: float | None  # the RH decide() saw this tick (None = no sensor/stale → overcool off)
     spread: float | None  # room-to-room max−min (None = <2 fresh sensors); drives fan-circulate
@@ -258,7 +260,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         # thermostat's own min_temp/max_temp — already in the system unit and correct for the actual
         # equipment — so the defaults here are just a base.
         self._config = _config_from_options(entry.options)
-        # Schedule gate, consumed by the optimal-start tick in 7c (no scheduled_target call yet).
+        # Day/night schedule: the gate, plus the last scheduled setpoint seen (so we re-assert the
+        # target only when it *changes* — see _async_update_data). Persisted so a restart spanning a
+        # transition still picks up the new setpoint instead of holding the old one until the next one.
         self._schedule_enabled: bool = entry.options.get(CONF_SCHEDULE_ENABLED, False)
 
         # Control state — restored from disk in async_load_state(), then kept in memory and saved
@@ -269,6 +273,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._last_target: float | None = None
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
+        self._last_scheduled: float | None = None
         # Whether the target was explicitly set (via async_set_target — a user today, a schedule in
         # step 7) vs auto-seeded. An explicit target is kept across an enable toggle; an auto-seeded
         # one is re-seeded to "now" (see set_enabled).
@@ -293,6 +298,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._last_target = stored.get("last_target")
         self._last_change_ts = stored.get("last_change_ts", 0.0)
         self._target_user_set = stored.get("target_user_set", False)
+        self._last_scheduled = stored.get("last_scheduled")
 
     @callback
     def _persisted_state(self) -> dict[str, float | bool | None]:
@@ -302,6 +308,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             "last_target": self._last_target,
             "last_change_ts": self._last_change_ts,
             "target_user_set": self._target_user_set,
+            "last_scheduled": self._last_scheduled,
         }
 
     def _save_state(self) -> None:
@@ -335,6 +342,31 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._target_user_set = True
         self._save_state()
         await self.async_request_refresh()
+
+    def _apply_schedule(self) -> float | None:
+        """Re-assert the target on a day/night schedule transition; return the scheduled setpoint.
+
+        Returns ``None`` when no schedule is configured. Otherwise it computes the setpoint for the
+        current *local* wall-clock (never UTC — the schedule is in local time) and, on a *change* vs
+        the last tick, jumps the target to it. Between transitions the target is left alone, so a
+        manual hold — or the re-seed after an enable toggle — survives until the next transition.
+        Enabling a schedule mid-period is therefore inert until that period ends; the first visible
+        change is the next transition. Runs every tick like ``decide()``; the resulting write is still
+        gated on the kill switch (the seed at ``_run_decide`` already mutates the target while
+        disabled, so this is consistent).
+        """
+        if not self._schedule_enabled:
+            return None
+        now = dt_util.now()  # local time → minutes-since-local-midnight, the unit scheduled_target wants
+        scheduled = scheduled_target(now.hour * 60 + now.minute, self._config)
+        if self._last_scheduled is not None and scheduled != self._last_scheduled:
+            # A transition. Jump the target; leave _last_target so the next decide() feedforward-jumps
+            # the band. Deliberately NOT setting _target_user_set — a schedule target stays auto-seeded
+            # so an enable toggle re-seeds to "now" (the re-enable handback relies on this; see
+            # set_enabled). Marking it user-set here would silently break that.
+            self._target = scheduled
+        self._last_scheduled = scheduled
+        return scheduled
 
     def _read_state_float(self, entity_id: str) -> float | None:
         """Read one entity's numeric state, or ``None`` if missing/unavailable/non-numeric."""
@@ -516,6 +548,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         room_spread = spread(temps)
         humidity = self._read_humidity()
         wrapped = self._read_wrapped()
+        # Day/night schedule re-asserts the target at transitions (before decide() runs this tick).
+        scheduled = self._apply_schedule()
         proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
         # Fan-circulate runs every tick regardless of HVAC mode (stratification builds when idle), so
         # it is gated independently of band availability — it fires even when there's no AUTO band.
@@ -545,6 +579,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             band_low=wrapped.band_low,
             band_high=wrapped.band_high,
             target=self._target,
+            scheduled=scheduled,
             learned_offset=self._learned_offset,
             humidity=humidity,
             spread=room_spread,
