@@ -384,8 +384,25 @@ async def test_no_fan_write_when_disabled(hass: HomeAssistant) -> None:
     data = await coordinator._async_update_data()
 
     assert len(calls) == 0
-    assert data.fan_blocked is None
+    assert data.fan_blocked is None  # writable, just inert (not blocked) — only disabled
     assert data.fan_proposed.set_fan is True
+
+
+async def test_fan_block_reason_surfaces_even_when_disabled(hass: HomeAssistant) -> None:
+    # Shadow-everything: a circulate that *can't* fire (here, no continuous "on" mode) is diagnosed
+    # even with the switch off, so the deferred thresholds are tunable before enabling.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")  # spread high → would circulate
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto", fan_modes=("auto",)))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])  # disabled
+    calls = async_mock_service(hass, "climate", "set_fan_mode")
+
+    data = await coordinator._async_update_data()
+
+    assert len(calls) == 0
+    assert data.fan_proposed.set_fan is True
+    assert data.fan_blocked == "fan_mode_unsupported"
 
 
 async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:

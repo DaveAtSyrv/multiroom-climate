@@ -484,13 +484,13 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             if await self._write_band(proposed):
                 self._last_change_ts = now_ts
 
-        # Fan write (no rate limit): when enabled and a change is wanted, write it unless we don't own
-        # the current mode or the target is unsupported — surfacing the block reason for diagnosis.
-        fan_blocked: str | None = None
-        if self.enabled and fan_proposed.set_fan:
-            fan_blocked = self._fan_block_reason(wrapped, fan_proposed)
-            if fan_blocked is None:
-                await self._write_fan(fan_proposed)
+        # Fan write (no rate limit). The block reason is computed whenever a circulate is *wanted* —
+        # independent of the switch — so the shadow surfaces "why circulation can't fire" even while
+        # disabled (the shadow-everything norm; matches when shadow_proposed_fan shows intent). Only
+        # the actual write is gated on enabled.
+        fan_blocked = self._fan_block_reason(wrapped, fan_proposed) if fan_proposed.set_fan else None
+        if self.enabled and fan_proposed.set_fan and fan_blocked is None:
+            await self._write_fan(fan_proposed)
 
         if self._persisted_state() != before:
             self._save_state()
