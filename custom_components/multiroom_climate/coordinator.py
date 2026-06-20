@@ -39,6 +39,7 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import convert
@@ -119,6 +120,19 @@ def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, floa
     A module-level factory so entry removal can delete the file without constructing a coordinator.
     """
     return Store(hass, _STORE_VERSION, f"{DOMAIN}.{entry.entry_id}")
+
+
+def build_device_info(entry: ConfigEntry) -> DeviceInfo:
+    """One virtual SERVICE device per entry, so the climate + switch entities group together in the UI.
+
+    SERVICE because there's no physical device of our own — we drive an existing thermostat.
+    """
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title,
+        manufacturer="Multiroom Climate",
+        entry_type=DeviceEntryType.SERVICE,
+    )
 
 
 def house_average(temps: list[float]) -> float | None:

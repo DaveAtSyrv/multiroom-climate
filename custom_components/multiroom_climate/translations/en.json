@@ -37,6 +37,13 @@
       "reconfigure_successful": "Sensors updated."
     }
   },
+  "entity": {
+    "switch": {
+      "control": {
+        "name": "Control"
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {

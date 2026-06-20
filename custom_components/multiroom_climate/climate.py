@@ -21,7 +21,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry, fan_mode_for
+from .coordinator import (
+    MultiroomClimateCoordinator,
+    MultiroomConfigEntry,
+    build_device_info,
+    fan_mode_for,
+)
 
 # Coordinator centralizes/serializes all device I/O; entity actions only touch in-memory state.
 # 0 = unlimited, the HA quality-scale value for coordinator-based integrations.
@@ -43,13 +48,16 @@ class MultiroomClimateEntity(
     """Renders the house average + a single settable target; mirrors the wrapped HVAC mode."""
 
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+    # The main entity of the device → no own name; it takes the device (entry.title) name.
+    _attr_has_entity_name = True
+    _attr_name = None
 
     def __init__(
         self, coordinator: MultiroomClimateCoordinator, entry: MultiroomConfigEntry
     ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = entry.entry_id
-        self._attr_name = entry.title
+        self._attr_device_info = build_device_info(entry)
 
     @property
     def temperature_unit(self) -> str:
