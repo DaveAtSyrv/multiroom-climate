@@ -2,8 +2,9 @@
 
 Minimal "get it installed" flow: pick the thermostat to wrap, the target temperature sensors, and
 (optionally) a humidity sensor to enable cooling-season overcool. Tunables (targets, schedule, gains,
-fan) land in an options flow in a later PR — the integration is designed to work out of the box from
-just the thermostat + at least one temperature sensor.
+humidity tuning, fan) land in an options flow in a later PR — only the humidity *sensor* is picked
+here; its setpoint/gain/cap stay on ``ControllerConfig`` defaults for now. The integration is
+designed to work out of the box from just the thermostat + at least one temperature sensor.
 """
 
 from __future__ import annotations

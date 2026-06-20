@@ -249,16 +249,16 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._save_state()
         await self.async_request_refresh()
 
+    def _read_state_float(self, entity_id: str) -> float | None:
+        """Read one entity's numeric state, or ``None`` if missing/unavailable/non-numeric."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        return convert(state.state, float)
+
     def _read_sensors(self) -> tuple[float | None, int]:
         """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
-        temps: list[float] = []
-        for sensor in self._sensors:
-            state = self.hass.states.get(sensor)
-            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                continue
-            value = convert(state.state, float)
-            if value is not None:
-                temps.append(value)
+        temps = [v for s in self._sensors if (v := self._read_state_float(s)) is not None]
         return house_average(temps), len(temps)
 
     def _read_humidity(self) -> float | None:
@@ -269,10 +269,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         """
         if self._humidity_sensor is None:
             return None
-        state = self.hass.states.get(self._humidity_sensor)
-        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return None
-        return convert(state.state, float)
+        return self._read_state_float(self._humidity_sensor)
 
     def _read_wrapped(self) -> _WrappedReading:
         wrapped = self.hass.states.get(self._wrapped)
