@@ -25,8 +25,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) ->
     await coordinator.async_load_state()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    # Reload on options change so a new schedule is picked up (config is read in the coordinator ctor).
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: MultiroomConfigEntry) -> None:
+    """Reload the entry when its options change so the coordinator rebuilds its config."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> bool:

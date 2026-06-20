@@ -21,12 +21,21 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
+    CONF_DAY_START,
+    CONF_DAY_TEMP,
     CONF_HUMIDITY_SENSOR,
+    CONF_NIGHT_START,
+    CONF_NIGHT_TEMP,
+    CONF_OPTIMAL_START_LEAD,
+    CONF_SCHEDULE_ENABLED,
     CONF_TARGET_SENSORS,
     DOMAIN,
 )
+from custom_components.multiroom_climate.controller import ControllerConfig
 from custom_components.multiroom_climate.coordinator import (
     MultiroomClimateCoordinator,
+    _config_from_options,
+    _time_to_minutes,
     house_average,
     spread,
 )
@@ -54,6 +63,58 @@ def test_spread_single_sensor_is_none() -> None:
 
 def test_spread_empty_is_none() -> None:
     assert spread([]) is None
+
+
+def test_time_to_minutes_parses_hh_mm_ss() -> None:
+    assert _time_to_minutes("06:30:00", default=-1.0) == 390.0
+    assert _time_to_minutes("00:00:00", default=-1.0) == 0.0
+    assert _time_to_minutes("22:00:00", default=-1.0) == 1320.0
+
+
+def test_time_to_minutes_falls_back_on_missing_or_malformed() -> None:
+    assert _time_to_minutes(None, default=360.0) == 360.0
+    assert _time_to_minutes("", default=360.0) == 360.0
+    assert _time_to_minutes("not-a-time", default=360.0) == 360.0
+
+
+def test_config_from_options_empty_is_defaults() -> None:
+    assert _config_from_options({}) == ControllerConfig()
+
+
+def test_config_from_options_overlays_schedule() -> None:
+    cfg = _config_from_options(
+        {
+            CONF_DAY_TEMP: 70.0,
+            CONF_NIGHT_TEMP: 64.0,
+            CONF_DAY_START: "05:30:00",
+            CONF_NIGHT_START: "23:15:00",
+            CONF_OPTIMAL_START_LEAD: 30,
+        }
+    )
+    assert cfg.day_temp == 70.0
+    assert cfg.night_temp == 64.0
+    assert cfg.day_start_min == 330.0  # 5*60 + 30
+    assert cfg.night_start_min == 1395.0  # 23*60 + 15
+    assert cfg.optimal_start_lead_min == 30
+    # Untouched base tunables are preserved.
+    assert cfg.deadband == ControllerConfig().deadband
+
+
+def test_coordinator_reads_schedule_from_options(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test",
+        data={CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: ["sensor.a"]},
+        options={
+            CONF_SCHEDULE_ENABLED: True,
+            CONF_DAY_TEMP: 70.0,
+            CONF_DAY_START: "05:30:00",
+        },
+    )
+    coordinator = MultiroomClimateCoordinator(hass, entry)
+    assert coordinator._schedule_enabled is True
+    assert coordinator._config.day_temp == 70.0
+    assert coordinator._config.day_start_min == 330.0
 
 
 def _make_coordinator(
