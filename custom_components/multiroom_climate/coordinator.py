@@ -26,10 +26,12 @@ from homeassistant.components.climate import (
     ATTR_MIN_TEMP,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
+    DOMAIN as CLIMATE_DOMAIN,
+    SERVICE_SET_TEMPERATURE,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -136,6 +138,7 @@ class CoordinatorData:
     fresh_sensors: int
     total_sensors: int
     thermostat_present: bool
+    enabled: bool
 
 
 class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
@@ -165,6 +168,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
 
+        # Master enable (the kill switch). Default off: a fresh install is inert until the user opts
+        # in, so it never drives the thermostat unexpectedly. Owned here; the switch entity sets it.
+        self.enabled: bool = False
+
     async def async_load_state(self) -> None:
         """Restore persisted control state before the first refresh.
 
@@ -192,6 +199,22 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     def _save_state(self) -> None:
         """Debounced write of the control state to disk (the ``.storage`` file, not the thermostat)."""
         self._store.async_delay_save(self._persisted_state, _SAVE_DELAY_S)
+
+    @callback
+    def set_enabled(self, enabled: bool, *, reseed: bool = True) -> None:
+        """Flip the kill switch (the switch entity calls this).
+
+        A user toggle (``reseed=True``) re-seeds the target to the current house average on enable —
+        so turning control on means "hold where we are now" rather than jumping toward a possibly-
+        stale seed — while keeping the expensive learned offset. Restore-on-restart passes
+        ``reseed=False`` to resume regulating toward the persisted target it was already holding.
+        Disabling just stops writing; the band is left as-is (already bias-compensated for current
+        conditions), so the handback is clean.
+        """
+        self.enabled = enabled
+        if enabled and reseed:
+            self._target = None
+            self._last_target = None
 
     def _read_sensors(self) -> tuple[float | None, int]:
         """Return the weighted house average (None if no sensor is fresh) and the fresh count."""
@@ -230,49 +253,46 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
 
     def _evaluate(
         self, house_avg: float | None, wrapped: _WrappedReading
-    ) -> tuple[Action | None, str]:
-        """Decide what (if anything) to propose this tick, with a status for observability.
+    ) -> tuple[Action | None, str, float | None]:
+        """Decide what (if anything) to propose this tick. Returns (action, status, tick timestamp).
 
         Three cases once the thermostat advertises a band + bounds (else we can't act at all):
         - a fresh house average → seed-if-needed and run the normal control tick;
         - no fresh average but we were already regulating → ``decide(available=False)`` failsafe;
         - no fresh average and never seeded → wait (skip *before* building ``ControllerInputs`` so a
           ``None`` target can't reach the dataclass).
+
+        The timestamp is returned so the caller can stamp ``last_change_ts`` with the same tick time
+        *after* a successful write; it's ``None`` when ``decide()`` didn't run.
         """
         if not wrapped.has_band_and_bounds:
-            return None, _STATUS_NO_BAND
+            return None, _STATUS_NO_BAND, None
         if house_avg is not None:
-            action = self._run_decide(house_avg, wrapped, available=True)
-            return action, action.reason
+            action, now_ts = self._run_decide(house_avg, wrapped, available=True)
+            return action, action.reason, now_ts
         if self._target is not None:
             # Was regulating, then lost every sensor → failsafe (house_average is a don't-care here).
-            action = self._run_decide(self._target, wrapped, available=False)
-            return action, action.reason
-        return None, _STATUS_WAITING
+            action, now_ts = self._run_decide(self._target, wrapped, available=False)
+            return action, action.reason, now_ts
+        return None, _STATUS_WAITING, None
 
     def _run_decide(
         self, house_avg: float, wrapped: _WrappedReading, *, available: bool
-    ) -> Action:
-        """Run the real ``decide()`` and advance the control state as actuation will — except for
-        the write. Persisting ``new_offset`` and stamping ``last_change_ts`` on a proposed band keep
-        the rate limit and offset EMA behaving as they will once we actuate. Safety bounds come from
-        the wrapped thermostat's own min/max for this tick.
+    ) -> tuple[Action, float]:
+        """Run ``decide()`` and advance the *learning* state (offset, target). Returns the action and
+        the tick timestamp.
+
+        It deliberately does **not** stamp ``last_change_ts`` or perform the write — those happen in
+        the async path only on a *successful* write, because the rate limit must track real band
+        changes, not proposals. (Stamping here would let a disabled stretch's proposals phantom-rate-
+        limit the first real write.) Safety bounds come from the wrapped thermostat's min/max.
 
         When ``available`` is False (lost all sensors mid-regulation) ``decide()`` short-circuits to
         the failsafe: freeze + a would-notify message, no learning — so ``house_avg`` is unused and
         the caller passes the retained target as a placeholder.
-
-        Not exercised in shadow, by construction: the loop is **open-loop** (nothing is written, so a
-        sustained drift re-proposes the *same* trim rather than converging), and **feedforward** never
-        fires (the seeded target is constant; ``_last_target`` is wired for 5d's settable target).
-        The within-deadband offset learning — the genuine "67-to-hold-70" bias — is what runs live.
         """
-        # Snapshot the persisted fields, then save iff any changed this tick — robust to which branch
-        # mutated what (and to fields added later) without a hand-maintained flag.
-        before = self._persisted_state()
-
         # Seed the target to the current operating point so the within-deadband learning branch runs
-        # from the first tick (the actual user-settable target arrives with actuation).
+        # from the first tick (enabling control re-seeds the target the same way).
         if available and self._target is None:
             self._target = house_avg
             self._last_target = house_avg
@@ -295,17 +315,45 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         )
         if action.new_offset is not None:
             self._learned_offset = action.new_offset
-        if action.set_band:
-            self._last_change_ts = now_ts
         self._last_target = self._target
-        if self._persisted_state() != before:
-            self._save_state()
-        return action
+        return action, now_ts
+
+    async def _write_band(self, action: Action) -> bool:
+        """Push the proposed band to the wrapped thermostat. Returns True iff the write succeeded.
+
+        A failed write is logged and swallowed so it can't break the coordinator update or advance
+        ``last_change_ts``; we re-read the real band next tick, so the model self-corrects.
+        """
+        try:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_TEMPERATURE,
+                {
+                    ATTR_ENTITY_ID: self._wrapped,
+                    ATTR_TARGET_TEMP_LOW: action.band_low,
+                    ATTR_TARGET_TEMP_HIGH: action.band_high,
+                },
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - a failed write must not break the update
+            _LOGGER.warning("Failed to set %s band: %s", self._wrapped, err)
+            return False
+        return True
 
     async def _async_update_data(self) -> CoordinatorData:
+        before = self._persisted_state()
         house_avg, fresh = self._read_sensors()
         wrapped = self._read_wrapped()
-        proposed, status = self._evaluate(house_avg, wrapped)
+        proposed, status, now_ts = self._evaluate(house_avg, wrapped)
+
+        # Actuate only when enabled; decide() still ran (above) so the shadow_* attributes keep
+        # showing what it would do. last_change_ts advances only on a *successful* write.
+        if self.enabled and proposed is not None and proposed.set_band and now_ts is not None:
+            if await self._write_band(proposed):
+                self._last_change_ts = now_ts
+
+        if self._persisted_state() != before:
+            self._save_state()
 
         return CoordinatorData(
             house_average=house_avg,
@@ -320,6 +368,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             fresh_sensors=fresh,
             total_sensors=len(self._sensors),
             thermostat_present=wrapped.present,
+            enabled=self.enabled,
         )
 
 

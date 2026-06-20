@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry, build_store
 
-_PLATFORMS = [Platform.CLIMATE]
+_PLATFORMS = [Platform.CLIMATE, Platform.SWITCH]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> bool:
