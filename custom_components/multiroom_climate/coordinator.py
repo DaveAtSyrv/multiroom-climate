@@ -27,17 +27,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import convert
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import CONF_CLIMATE_ENTITY, CONF_TARGET_SENSORS, DOMAIN
 from .controller import Action, ControllerConfig, ControllerInputs, decide
 
 _LOGGER = logging.getLogger(__name__)
 _UPDATE_INTERVAL = timedelta(seconds=60)
-
-# ControllerConfig's default temp bounds are in °C; widen them for a Fahrenheit system so shadow
-# proposals aren't clamped to nonsense. (Reading the wrapped thermostat's own min/max is a later
-# refinement.)
-_FAHRENHEIT_BOUNDS = {"temp_min": 45.0, "temp_max": 95.0}
 
 
 def house_average(temps: list[float]) -> float | None:
@@ -95,12 +91,16 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._sensors: list[str] = entry.data[CONF_TARGET_SENSORS]
         self._wrapped: str = entry.data[CONF_CLIMATE_ENTITY]
 
-        bounds = (
-            _FAHRENHEIT_BOUNDS
-            if hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT
-            else {}
+        # ControllerConfig's default safety bounds are in °C; convert them to the system unit so
+        # shadow proposals aren't clamped to nonsense on a °F system. (Sourcing the bounds from the
+        # wrapped thermostat's own min_temp/max_temp is a 5d refinement — see SPEC §6.) The small
+        # per-tick deltas (deadband, max_step) stay unit-agnostic and are tuned live.
+        unit = hass.config.units.temperature_unit
+        defaults = ControllerConfig()
+        self._config = ControllerConfig(
+            temp_min=TemperatureConverter.convert(defaults.temp_min, UnitOfTemperature.CELSIUS, unit),
+            temp_max=TemperatureConverter.convert(defaults.temp_max, UnitOfTemperature.CELSIUS, unit),
         )
-        self._config = ControllerConfig(**bounds)
 
         # Shadow control state (in-memory; durable persistence lands with actuation).
         self._target: float | None = None
@@ -140,10 +140,19 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     def _shadow_decide(
         self, house_avg: float, band_low: float, band_high: float
     ) -> Action:
-        """Run the real ``decide()`` and advance the control state exactly as actuation would —
-        except for the write. Mirroring the full state machine (persisting ``new_offset``, stamping
-        ``last_change_ts`` on a proposed band) keeps the shadow faithful: the rate limit engages and
-        the learned offset evolves just as they will once we actuate.
+        """Run the real ``decide()`` and advance the control state as actuation will — except for
+        the write. Persisting ``new_offset`` and stamping ``last_change_ts`` on a proposed band keep
+        the rate limit and offset EMA behaving as they will once we actuate.
+
+        Two things are *not* exercised in shadow, by construction:
+        - **Open-loop:** because nothing is written, the band never moves and the house never
+          responds, so a sustained drift re-proposes the *same* trim each period rather than
+          converging. ``shadow_proposed_band_*`` is "current band ± one step", not a trajectory.
+        - **Feedforward:** the seeded target is constant here, so ``target != last_target`` never
+          holds. ``_last_target`` is wired for 5d, when the target becomes user-settable and a change
+          fires the feedforward jump.
+        What *does* run live is the within-deadband offset learning — the genuine "67-to-hold-70"
+        bias — which is the point of shadow mode and a good seed for 5d.
         """
         # Seed the target to the current operating point so the within-deadband learning branch runs
         # from the first tick (the actual user-settable target arrives with actuation).

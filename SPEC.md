@@ -112,6 +112,12 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
    - 5d. ⬜ **NEXT:** actuate — flip shadow → real `climate.set_temperature`; add `RestoreEntity`/
      `Store` for the learned offset + last target, a settable target (resolve single-vs-range HA
      modeling — verify against Versatile Thermostat's `over_climate`), and the master kill switch.
+     Must also (carried from shadow-mode review): (a) **source band bounds from the wrapped entity's
+     `min_temp`/`max_temp`** (system-unit, correct for any equipment) and delete the °C-default
+     conversion scaffolding in the coordinator; (b) **wire availability + failsafe** — compute
+     `ControllerInputs.available` (don't hardcode True), route `decide()`'s failsafe *notify* on
+     stale/missing sensors (today the coordinator freezes silently), and decide all-vs-any partial-
+     staleness policy so a write path can't regulate off one surviving sensor with no failsafe.
 6. ⬜ Humidity bias + fan-circulate layers.
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
