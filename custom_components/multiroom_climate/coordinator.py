@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from datetime import timedelta
 import logging
 
-from homeassistant.components.climate import HVACMode
+from homeassistant.components.climate import (
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
+    HVACMode,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
@@ -39,13 +43,30 @@ def _to_hvac_mode(value: str) -> HVACMode | None:
         return None
 
 
+def _as_float(value: object) -> float | None:
+    """Coerce a state attribute to a float, or None if it's missing/non-numeric."""
+    if value is None:
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class CoordinatorData:
-    """The regulated view computed each tick: the house average + the wrapped thermostat's mode."""
+    """The regulated view computed each tick: the house average + the wrapped thermostat's state.
+
+    ``band_low``/``band_high`` are the wrapped thermostat's current AUTO setpoints — the band the
+    controller will slide once actuation lands. Surfaced now (read-only) so the band can be watched
+    alongside the house average before any writes happen.
+    """
 
     house_average: float | None
     hvac_mode: HVACMode | None
     hvac_modes: tuple[HVACMode, ...]
+    band_low: float | None
+    band_high: float | None
 
     @property
     def available(self) -> bool:
@@ -79,6 +100,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
 
         hvac_mode: HVACMode | None = None
         hvac_modes: tuple[HVACMode, ...] = ()
+        band_low: float | None = None
+        band_high: float | None = None
         wrapped = self.hass.states.get(self._wrapped)
         if wrapped is not None:
             if wrapped.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
@@ -91,11 +114,15 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 )
                 if mode is not None
             )
+            band_low = _as_float(wrapped.attributes.get(ATTR_TARGET_TEMP_LOW))
+            band_high = _as_float(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH))
 
         return CoordinatorData(
             house_average=house_average(temps),
             hvac_mode=hvac_mode,
             hvac_modes=hvac_modes,
+            band_low=band_low,
+            band_high=band_high,
         )
 
 
