@@ -53,10 +53,13 @@ dehumidify-demand control, away/vacation modes (revisit post-v1).
 Daikin stays in **AUTO** (low=heat setpoint, high=cool setpoint). We slide the band; the thermostat
 decides heat vs cool.
 
-1. **Learned offset (feedforward):** `offset = average(target_rooms) - thermostat_internal_temp`,
-   smoothed (EMA). This is the bias to compensate.
-2. **Feedforward jump on change** (target change or day↔night transition): immediately command
-   `setpoint = target - offset` (cooling) / `target + offset` (heating), applied to the band.
+1. **Learned offset:** `K = band_center - house_average`, slow EMA, updated **only when settled**
+   (`|error| <= deadband`, so the house is never sampled mid-recovery). Learned relative to the band
+   we actuate (not the thermostat's own sensor) — one signed number that absorbs both the sensor
+   bias and the band-center-vs-regulation gap, needing no extra sensor.
+2. **Feedforward jump on change** (target change or day↔night transition): jump the band so
+   `band_center = target + K`, bypassing the deadband + rate-limit gates. Signed `K` handles both
+   heating and cooling. (Pure `decide()` returns the updated `K`; the caller persists it.)
 3. **Band-shift trim (hold):** each tick `error = target - house_average`; if `|error| <= deadband`
    do nothing; else `step = clamp(Kp * error, -MAXSTEP, +MAXSTEP)`, and shift **both** band setpoints
    by `step` (clamped to equipment min/max, preserving the thermostat's min heat/cool gap).
