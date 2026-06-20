@@ -163,3 +163,25 @@ async def test_unavailable_when_thermostat_missing(
 
     assert state is not None
     assert state.state == "unavailable"
+
+
+async def test_remove_entry_deletes_stored_state(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    from custom_components.multiroom_climate import async_remove_entry
+    from custom_components.multiroom_climate.coordinator import build_store
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id="climate.daikin", data=_ENTRY_DATA, title="Downstairs"
+    )
+    entry.add_to_hass(hass)
+    store = build_store(hass, entry)
+    await store.async_save(
+        {"learned_offset": -1.0, "target": 70.0, "last_target": 70.0, "last_change_ts": 0.0}
+    )
+    assert store.key in hass_storage
+
+    await async_remove_entry(hass, entry)
+
+    # The .storage file must not orphan when the entry is deleted.
+    assert store.key not in hass_storage

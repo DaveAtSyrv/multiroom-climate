@@ -122,7 +122,7 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
      - 5d-3. ✅ Durable persistence — coordinator-held control state (learned offset, target,
        last target/change) saved to a `helpers.storage.Store` (debounced) and restored before the
        first refresh, so the slow-EMA bias survives restarts. Restoring the target also avoids a
-       restart re-seed and a spurious feedforward. Still no thermostat writes. (#11)
+       restart re-seed; persisting `last_target` keeps 5d-4's feedforward gate sound. (#11)
      - 5d-4. ⬜ The flip — settable target (resolve single-vs-range HA modeling, verify against
        Versatile Thermostat's `over_climate`) + real `climate.set_temperature` + master kill switch.
        Advisor consult before building (first real writes).

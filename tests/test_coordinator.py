@@ -7,6 +7,8 @@ non-numeric / unknown HVAC mode" behaviour is covered end to end.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from homeassistant.components.climate import HVACMode
 from homeassistant.core import HomeAssistant
@@ -334,3 +336,18 @@ async def test_saves_and_reloads_control_state(hass: HomeAssistant, hass_storage
     await reloaded.async_load_state()
     assert reloaded._learned_offset == learned
     assert reloaded._target == 70.0
+
+
+async def test_failsafe_tick_does_not_save(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # tick 1: seeds + learns → a real state change
+    hass.states.async_set("sensor.a", "unavailable")  # lose the sensor → failsafe
+    with patch.object(coordinator, "_save_state") as save:
+        data = await coordinator._async_update_data()  # tick 2: decide runs but nothing mutates
+
+    assert data.status == "failsafe"
+    save.assert_not_called()  # snapshot-compare skips the write when no persisted field changed

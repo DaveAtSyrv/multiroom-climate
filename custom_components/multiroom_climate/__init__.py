@@ -12,7 +12,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
-from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry
+from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry, build_store
 
 _PLATFORMS = [Platform.CLIMATE]
 
@@ -30,3 +30,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) ->
 async def async_unload_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> None:
+    """Delete the persisted control state when the entry is removed (don't orphan the file)."""
+    await build_store(hass, entry).async_remove()
