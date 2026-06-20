@@ -21,6 +21,7 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
+    CONF_HUMIDITY_SENSOR,
     CONF_TARGET_SENSORS,
     DOMAIN,
 )
@@ -43,14 +44,15 @@ def test_house_average_empty_is_none() -> None:
 
 
 def _make_coordinator(
-    hass: HomeAssistant, sensors: list[str], entry_id: str = "test_entry"
+    hass: HomeAssistant,
+    sensors: list[str],
+    entry_id: str = "test_entry",
+    humidity_sensor: str | None = None,
 ) -> MultiroomClimateCoordinator:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        entry_id=entry_id,
-        data={CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: sensors},
-    )
+    data = {CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: sensors}
+    if humidity_sensor is not None:
+        data[CONF_HUMIDITY_SENSOR] = humidity_sensor
+    entry = MockConfigEntry(domain=DOMAIN, title="Test", entry_id=entry_id, data=data)
     return MultiroomClimateCoordinator(hass, entry)
 
 
@@ -183,6 +185,56 @@ async def test_shadow_proposes_trim_when_house_drifts(hass: HomeAssistant) -> No
     # error 70−66 = 4; step clamp(0.3*4, −0.5, 0.5) = 0.5; band shifts +0.5 (in °F bounds).
     assert data.proposed.band_low == pytest.approx(67.5)
     assert data.proposed.band_high == pytest.approx(69.5)
+
+
+# --- humidity sensor wiring (the end-to-end config→read→decide thread) ------
+
+async def test_humidity_sensor_drives_overcool_trim_down(hass: HomeAssistant) -> None:
+    # The discriminating test for 6b: a configured RH sensor reading above target, while cooling,
+    # must reach decide() and shift the band DOWN (overcool). Same house/band as the settled case
+    # below — only the humidity sensor differs — so this proves config→tick→decide is connected.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.rh", "70.0")  # 20 over the 50% default → 2.0°F overcool (the cap)
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"], humidity_sensor="sensor.rh")
+
+    data = await coordinator._async_update_data()
+
+    assert data.humidity == 70.0  # decide() saw the RH the coordinator read
+    # effective target 70−2 = 68; error 68−70 = −2; step clamp(0.3*−2, −0.5, 0.5) = −0.5 → band down.
+    assert data.proposed is not None
+    assert data.proposed.reason == "trim"
+    assert data.proposed.set_band is True
+    assert data.proposed.band_low == pytest.approx(66.5)
+    assert data.proposed.band_high == pytest.approx(68.5)
+
+
+async def test_no_humidity_sensor_leaves_humidity_none(hass: HomeAssistant) -> None:
+    # Without a humidity sensor the same setup is simply settled — overcool never engages.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.humidity is None
+    assert data.proposed is not None and data.proposed.reason == "within_deadband"
+
+
+async def test_stale_humidity_disables_overcool(hass: HomeAssistant) -> None:
+    # A configured-but-unavailable RH sensor reads as None (no humidity failsafe) → no overcool.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.rh", "unavailable")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"], humidity_sensor="sensor.rh")
+
+    data = await coordinator._async_update_data()
+
+    assert data.humidity is None
+    assert data.proposed is not None and data.proposed.reason == "within_deadband"
 
 
 async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:

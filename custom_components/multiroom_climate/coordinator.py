@@ -39,7 +39,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import convert
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_CLIMATE_ENTITY, CONF_TARGET_SENSORS, DOMAIN
+from .const import (
+    CONF_CLIMATE_ENTITY,
+    CONF_HUMIDITY_SENSOR,
+    CONF_TARGET_SENSORS,
+    DOMAIN,
+)
 from .controller import Action, ControllerConfig, ControllerInputs, decide
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,6 +145,7 @@ class CoordinatorData:
     band_high: float | None
     target: float | None
     learned_offset: float
+    humidity: float | None  # the RH decide() saw this tick (None = no sensor/stale → overcool off)
     proposed: Action | None
     status: str
     fresh_sensors: int
@@ -160,6 +166,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         )
         self._sensors: list[str] = entry.data[CONF_TARGET_SENSORS]
         self._wrapped: str = entry.data[CONF_CLIMATE_ENTITY]
+        # Optional RH sensor; .get() so entries created before this key still load. None disables overcool.
+        self._humidity_sensor: str | None = entry.data.get(CONF_HUMIDITY_SENSOR)
 
         # Base tunables (deadband, gain, rate limit, EMA). The safety bounds (temp_min/temp_max) are
         # overridden each tick from the wrapped thermostat's own min_temp/max_temp — already in the
@@ -253,6 +261,19 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 temps.append(value)
         return house_average(temps), len(temps)
 
+    def _read_humidity(self) -> float | None:
+        """Current relative humidity, or ``None`` if no sensor is configured/fresh.
+
+        ``None`` simply disables overcool (humidity is a comfort feature, not safety-critical — there
+        is no humidity failsafe; the temperature staleness policy is the only one that freezes HVAC).
+        """
+        if self._humidity_sensor is None:
+            return None
+        state = self.hass.states.get(self._humidity_sensor)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        return convert(state.state, float)
+
     def _read_wrapped(self) -> _WrappedReading:
         wrapped = self.hass.states.get(self._wrapped)
         if wrapped is None:
@@ -277,7 +298,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         )
 
     def _evaluate(
-        self, house_avg: float | None, wrapped: _WrappedReading
+        self, house_avg: float | None, wrapped: _WrappedReading, humidity: float | None
     ) -> tuple[Action | None, str, float | None]:
         """Decide what (if anything) to propose this tick. Returns (action, status, tick timestamp).
 
@@ -293,16 +314,16 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         if not wrapped.has_band_and_bounds:
             return None, _STATUS_NO_BAND, None
         if house_avg is not None:
-            action, now_ts = self._run_decide(house_avg, wrapped, available=True)
+            action, now_ts = self._run_decide(house_avg, wrapped, humidity, available=True)
             return action, action.reason, now_ts
         if self._target is not None:
             # Was regulating, then lost every sensor → failsafe (house_average is a don't-care here).
-            action, now_ts = self._run_decide(self._target, wrapped, available=False)
+            action, now_ts = self._run_decide(self._target, wrapped, humidity, available=False)
             return action, action.reason, now_ts
         return None, _STATUS_WAITING, None
 
     def _run_decide(
-        self, house_avg: float, wrapped: _WrappedReading, *, available: bool
+        self, house_avg: float, wrapped: _WrappedReading, humidity: float | None, *, available: bool
     ) -> tuple[Action, float]:
         """Run ``decide()`` and advance the *learning* state (offset, target). Returns the action and
         the tick timestamp.
@@ -335,9 +356,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 last_change_ts=self._last_change_ts,
                 learned_offset=self._learned_offset,
                 last_target=self._last_target,
-                # Humidity overcool is mode-gated; wire the cooling flag now (humidity sensor lands in
-                # 6b, so RH is None for now — the gate is exercised but applies no offset yet).
-                humidity=None,
+                # Humidity overcool: mode-gated cooling flag + the RH read (None when no sensor is
+                # configured/fresh, which simply disables overcool). decide() ignores both on the
+                # failsafe path, so passing them when available=False is harmless.
+                humidity=humidity,
                 cooling=wrapped.is_cooling,
             ),
             config,
@@ -372,8 +394,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     async def _async_update_data(self) -> CoordinatorData:
         before = self._persisted_state()
         house_avg, fresh = self._read_sensors()
+        humidity = self._read_humidity()
         wrapped = self._read_wrapped()
-        proposed, status, now_ts = self._evaluate(house_avg, wrapped)
+        proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
 
         # Actuate only when enabled; decide() still ran (above) so the shadow_* attributes keep
         # showing what it would do. last_change_ts advances only on a *successful* write.
@@ -392,6 +415,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             band_high=wrapped.band_high,
             target=self._target,
             learned_offset=self._learned_offset,
+            humidity=humidity,
             proposed=proposed,
             status=status,
             fresh_sensors=fresh,

@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.multiroom_climate.const import (
     CONF_CLIMATE_ENTITY,
+    CONF_HUMIDITY_SENSOR,
     CONF_TARGET_SENSORS,
     DOMAIN,
 )
@@ -39,6 +40,21 @@ async def test_user_flow_creates_entry(hass: HomeAssistant, enable_custom_integr
     assert result["data"][CONF_TARGET_SENSORS] == _USER_INPUT[CONF_TARGET_SENSORS]
     # The dedup key must be derived from the wrapped thermostat.
     assert result["result"].unique_id == "climate.daikin"
+    # The humidity sensor is optional — omitting it leaves the key absent (so .get() returns None).
+    assert CONF_HUMIDITY_SENSOR not in result["data"]
+
+
+async def test_user_flow_persists_optional_humidity_sensor(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**_USER_INPUT, CONF_HUMIDITY_SENSOR: "sensor.hallway_humidity"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_HUMIDITY_SENSOR] == "sensor.hallway_humidity"
 
 
 async def test_empty_sensors_shows_error(hass: HomeAssistant, enable_custom_integrations) -> None:

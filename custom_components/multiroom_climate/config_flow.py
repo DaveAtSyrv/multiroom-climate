@@ -1,8 +1,9 @@
 """Config flow for Multiroom Climate.
 
-Minimal "get it installed" flow: pick the thermostat to wrap and the target temperature sensors.
-Tunables (targets, schedule, gains, humidity/fan) land in an options flow in a later PR — the
-integration is designed to work out of the box from just these two choices.
+Minimal "get it installed" flow: pick the thermostat to wrap, the target temperature sensors, and
+(optionally) a humidity sensor to enable cooling-season overcool. Tunables (targets, schedule, gains,
+fan) land in an options flow in a later PR — the integration is designed to work out of the box from
+just the thermostat + at least one temperature sensor.
 """
 
 from __future__ import annotations
@@ -14,7 +15,12 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_NAME
 from homeassistant.helpers import selector
 
-from .const import CONF_CLIMATE_ENTITY, CONF_TARGET_SENSORS, DOMAIN
+from .const import (
+    CONF_CLIMATE_ENTITY,
+    CONF_HUMIDITY_SENSOR,
+    CONF_TARGET_SENSORS,
+    DOMAIN,
+)
 
 _USER_SCHEMA = vol.Schema(
     {
@@ -26,6 +32,10 @@ _USER_SCHEMA = vol.Schema(
             selector.EntitySelectorConfig(
                 domain="sensor", device_class="temperature", multiple=True
             ),
+        ),
+        # Optional: one RH sensor. When set, cooling overcools while humid (see controller._overcool).
+        vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="humidity"),
         ),
     }
 )

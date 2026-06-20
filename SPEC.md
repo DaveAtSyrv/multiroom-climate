@@ -144,7 +144,9 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
    - 6a. ✅ Pure overcool logic in `decide()` — effective-target shift (`gain × RH-excess`, capped),
      mode-gated cooling flag wired live (`humidity=None` until 6b), feedforward stays on the nominal
      target. Unit-tested; no behavior change yet (RH is None).
-   - 6b. ⬜ Humidity sensor in the config flow + RH read wired into the coordinator tick.
+   - 6b. ✅ Humidity sensor in the config flow (optional, single RH sensor) + RH read wired into the
+     coordinator tick (stale/absent → `None` → overcool off; no humidity failsafe). Surfaced as a
+     `shadow_humidity` attribute for observability. (#16)
    - 6c. ⬜ Fan-circulate (continuous fan when room spread exceeds threshold).
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
