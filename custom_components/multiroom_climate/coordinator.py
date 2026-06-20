@@ -24,12 +24,15 @@ import logging
 
 from homeassistant.components.climate import (
     ATTR_FAN_MODE,
+    ATTR_FAN_MODES,
     ATTR_MAX_TEMP,
     ATTR_MIN_TEMP,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
     DOMAIN as CLIMATE_DOMAIN,
+    FAN_AUTO,
     FAN_ON,
+    SERVICE_SET_FAN_MODE,
     SERVICE_SET_TEMPERATURE,
     HVACMode,
 )
@@ -95,6 +98,16 @@ def spread(temps: list[float]) -> float | None:
     return max(temps) - min(temps) if len(temps) >= 2 else None
 
 
+# Fan-circulate only manages the on↔auto pair; a manual speed (low/medium/…) or an unreadable mode is
+# left untouched (we don't own it). The single source for the circulate-bool → fan-mode-string mapping.
+_MANAGED_FAN_MODES = (FAN_ON, FAN_AUTO)
+
+
+def fan_mode_for(circulate: bool) -> str:
+    """Map the controller's ``circulate`` bool to the wrapped thermostat's fan-mode string."""
+    return FAN_ON if circulate else FAN_AUTO
+
+
 def _to_hvac_mode(value: str) -> HVACMode | None:
     """Coerce a state/attribute string to an HVACMode, or None if it isn't one."""
     try:
@@ -118,6 +131,7 @@ class _WrappedReading:
     temp_min: float | None
     temp_max: float | None
     fan_mode: str | None
+    fan_modes: tuple[str, ...]
 
     @property
     def present(self) -> bool:
@@ -149,6 +163,7 @@ _NO_READING = _WrappedReading(
     temp_min=None,
     temp_max=None,
     fan_mode=None,
+    fan_modes=(),
 )
 
 
@@ -173,7 +188,8 @@ class CoordinatorData:
     learned_offset: float
     humidity: float | None  # the RH decide() saw this tick (None = no sensor/stale → overcool off)
     spread: float | None  # room-to-room max−min (None = <2 fresh sensors); drives fan-circulate
-    fan_proposed: FanAction  # the fan-circulate decision (shadow only until 6c-2 wires the write)
+    fan_proposed: FanAction  # the fan-circulate decision
+    fan_blocked: str | None  # why an enabled circulate didn't write (None = wrote or nothing to do)
     proposed: Action | None
     status: str
     fresh_sensors: int
@@ -323,6 +339,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             temp_min=convert(wrapped.attributes.get(ATTR_MIN_TEMP), float),
             temp_max=convert(wrapped.attributes.get(ATTR_MAX_TEMP), float),
             fan_mode=wrapped.attributes.get(ATTR_FAN_MODE),
+            fan_modes=tuple(wrapped.attributes.get(ATTR_FAN_MODES, [])),
         )
 
     def _evaluate(
@@ -419,6 +436,35 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             return False
         return True
 
+    def _fan_block_reason(self, wrapped: _WrappedReading, action: FanAction) -> str | None:
+        """Why an intended fan change can't be written, or ``None`` if it can.
+
+        We only manage the on/auto pair: a manual speed (low/medium/…) or an unreadable mode is left
+        untouched (we don't own it), and the target mode must be one the equipment advertises. These
+        are surfaced (not silently dropped) so a circulate that *wanted* to fire but couldn't is
+        diagnosable during live tuning — e.g. if the equipment's idle fan isn't literally ``auto``.
+        """
+        if wrapped.fan_mode not in _MANAGED_FAN_MODES:
+            return "fan_unmanaged"
+        if fan_mode_for(action.circulate) not in wrapped.fan_modes:
+            return "fan_mode_unsupported"
+        return None
+
+    async def _write_fan(self, action: FanAction) -> None:
+        """Set the wrapped thermostat's fan mode. No rate limit — ``decide_fan``'s hysteresis and the
+        ``desired != current`` guard already prevent thrash. A failed write is logged and swallowed;
+        we re-read the real fan mode next tick, so the model self-corrects.
+        """
+        try:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_FAN_MODE,
+                {ATTR_ENTITY_ID: self._wrapped, ATTR_FAN_MODE: fan_mode_for(action.circulate)},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - a failed write must not break the update
+            _LOGGER.warning("Failed to set %s fan mode: %s", self._wrapped, err)
+
     async def _async_update_data(self) -> CoordinatorData:
         before = self._persisted_state()
         temps = self._read_sensors()
@@ -428,8 +474,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         humidity = self._read_humidity()
         wrapped = self._read_wrapped()
         proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
-        # Fan-circulate runs every tick regardless of HVAC mode (stratification builds when idle).
-        # Shadow only until 6c-2 wires the set_fan_mode write behind the enable switch.
+        # Fan-circulate runs every tick regardless of HVAC mode (stratification builds when idle), so
+        # it is gated independently of band availability — it fires even when there's no AUTO band.
         fan_proposed = decide_fan(room_spread, wrapped.is_circulating, self._config)
 
         # Actuate only when enabled; decide() still ran (above) so the shadow_* attributes keep
@@ -437,6 +483,14 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         if self.enabled and proposed is not None and proposed.set_band and now_ts is not None:
             if await self._write_band(proposed):
                 self._last_change_ts = now_ts
+
+        # Fan write (no rate limit): when enabled and a change is wanted, write it unless we don't own
+        # the current mode or the target is unsupported — surfacing the block reason for diagnosis.
+        fan_blocked: str | None = None
+        if self.enabled and fan_proposed.set_fan:
+            fan_blocked = self._fan_block_reason(wrapped, fan_proposed)
+            if fan_blocked is None:
+                await self._write_fan(fan_proposed)
 
         if self._persisted_state() != before:
             self._save_state()
@@ -452,6 +506,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             humidity=humidity,
             spread=room_spread,
             fan_proposed=fan_proposed,
+            fan_blocked=fan_blocked,
             proposed=proposed,
             status=status,
             fresh_sensors=fresh,

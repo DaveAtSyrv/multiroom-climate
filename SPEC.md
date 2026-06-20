@@ -152,8 +152,14 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        surfaced as `shadow_spread` / `shadow_fan_status` / `shadow_proposed_fan`. Spread-only (NOT
        gated on HVAC mode — stratification builds when idle); two-threshold hysteresis is the only
        anti-thrash; `spread=None` (<2 fresh sensors) holds. No fan write yet.
-     - 6c-2. ⬜ The `set_fan_mode` write behind the master enable switch (FAN_ON/FAN_AUTO mapping +
-       fan-mode availability check + user-manual-fan override handling).
+     - 6c-2. ✅ The `set_fan_mode` write behind the master enable switch (#18). Single `fan_mode_for`
+       bool→string map; only manages the on/auto pair — a manual speed (low/medium/…) or unreadable
+       mode is left untouched, and the target must be in the equipment's `fan_modes`. Blocked-but-
+       wanted writes surface a `shadow_fan_blocked` reason (`fan_unmanaged`/`fan_mode_unsupported`) so
+       circulation that can't fire is diagnosable during live tuning. No rate limit (hysteresis +
+       desired≠current already prevent thrash). **Known v1 limitation:** we can't distinguish a user's
+       manual `on` from our own, so a user-set `on` is returned to `auto` once spread drops (a
+       provenance flag is v2).
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
    default store. (v2: direct Skyport API + reauth.)

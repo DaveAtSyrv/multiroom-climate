@@ -13,8 +13,6 @@ from typing import Any
 
 from homeassistant.components.climate import (
     ATTR_TEMPERATURE,
-    FAN_AUTO,
-    FAN_ON,
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
@@ -23,7 +21,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry
+from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry, fan_mode_for
 
 
 async def async_setup_entry(
@@ -119,5 +117,7 @@ class MultiroomClimateEntity(
             if proposed.notify:
                 attrs["shadow_notify"] = proposed.notify
         if data.fan_proposed.set_fan:
-            attrs["shadow_proposed_fan"] = FAN_ON if data.fan_proposed.circulate else FAN_AUTO
+            attrs["shadow_proposed_fan"] = fan_mode_for(data.fan_proposed.circulate)
+        if data.fan_blocked is not None:
+            attrs["shadow_fan_blocked"] = data.fan_blocked
         return attrs

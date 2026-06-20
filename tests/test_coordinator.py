@@ -252,9 +252,11 @@ async def test_stale_humidity_disables_overcool(hass: HomeAssistant) -> None:
 
 # --- fan-circulate wiring (spread → decide_fan; shadow only until 6c-2) ------
 
-def _heat_cool_fan(low: float, high: float, fan_mode: str) -> tuple[str, dict]:
+def _heat_cool_fan(
+    low: float, high: float, fan_mode: str, fan_modes: tuple[str, ...] = ("on", "auto")
+) -> tuple[str, dict]:
     state, attrs = _heat_cool(low, high)
-    return state, {**attrs, "fan_mode": fan_mode}
+    return state, {**attrs, "fan_mode": fan_mode, "fan_modes": list(fan_modes)}
 
 
 async def test_high_spread_proposes_circulate(hass: HomeAssistant) -> None:
@@ -298,6 +300,92 @@ async def test_single_fresh_sensor_holds_fan(hass: HomeAssistant) -> None:
     assert data.spread is None
     assert data.fan_proposed.set_fan is False
     assert data.fan_proposed.reason == "no_spread"
+
+
+# --- fan write (6c-2: behind the master enable switch) ----------------------
+
+async def test_writes_fan_on_when_enabled_and_spread_high(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")  # spread 6, avg 71 (band settles → no band write)
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto"))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+    coordinator.set_enabled(True)
+    calls = async_mock_service(hass, "climate", "set_fan_mode")
+
+    data = await coordinator._async_update_data()
+
+    assert len(calls) == 1
+    assert calls[0].data["entity_id"] == "climate.daikin"
+    assert calls[0].data["fan_mode"] == "on"
+    assert data.fan_blocked is None
+
+
+async def test_writes_fan_auto_when_enabled_and_spread_low(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.b", "70.2")  # spread 0.2, already circulating → return to auto
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "on"))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+    coordinator.set_enabled(True)
+    calls = async_mock_service(hass, "climate", "set_fan_mode")
+
+    data = await coordinator._async_update_data()
+
+    assert len(calls) == 1
+    assert calls[0].data["fan_mode"] == "auto"
+    assert data.fan_blocked is None
+
+
+async def test_no_fan_write_over_manual_speed(hass: HomeAssistant) -> None:
+    # The user has the fan on a manual speed → we don't own it → don't stomp it; surface why.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")  # spread high → would circulate
+    hass.states.async_set(
+        "climate.daikin",
+        *_heat_cool_fan(67.0, 69.0, "low", fan_modes=("low", "medium", "high", "auto", "on")),
+    )
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+    coordinator.set_enabled(True)
+    calls = async_mock_service(hass, "climate", "set_fan_mode")
+
+    data = await coordinator._async_update_data()
+
+    assert len(calls) == 0
+    assert data.fan_blocked == "fan_unmanaged"
+
+
+async def test_no_fan_write_when_target_mode_unsupported(hass: HomeAssistant) -> None:
+    # Equipment has no continuous "on" fan mode → can't circulate; surface why.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto", fan_modes=("auto",)))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+    coordinator.set_enabled(True)
+    calls = async_mock_service(hass, "climate", "set_fan_mode")
+
+    data = await coordinator._async_update_data()
+
+    assert len(calls) == 0
+    assert data.fan_blocked == "fan_mode_unsupported"
+
+
+async def test_no_fan_write_when_disabled(hass: HomeAssistant) -> None:
+    # Disabled → nothing is written, and it's not "blocked" (just inert); the shadow still shows intent.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "68.0")
+    hass.states.async_set("sensor.b", "74.0")
+    hass.states.async_set("climate.daikin", *_heat_cool_fan(67.0, 69.0, "auto"))
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])  # default: disabled
+    calls = async_mock_service(hass, "climate", "set_fan_mode")
+
+    data = await coordinator._async_update_data()
+
+    assert len(calls) == 0
+    assert data.fan_blocked is None
+    assert data.fan_proposed.set_fan is True
 
 
 async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:
