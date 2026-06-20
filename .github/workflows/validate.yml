@@ -18,10 +18,11 @@ jobs:
   hacs:
     name: HACS
     runs-on: ubuntu-latest
-    # The HACS action validates the repository's DEFAULT BRANCH (via the API), not the PR's
-    # checked-out files — so it can't pass on a PR that first introduces the integration. Run it
-    # on pushes to main + the nightly schedule instead; hassfest covers manifest checks on PRs.
-    if: github.event_name != 'pull_request'
+    # The HACS action reads repo files over unauthenticated raw.githubusercontent.com URLs, which
+    # 404 while the repo is PRIVATE — so it can't validate until we go public (hassfest covers
+    # manifest checks meanwhile, reading the workspace). Skip on PRs and while private; this job
+    # auto-activates when the repo is flipped public for the HACS/brands submission (SPEC §6/§7).
+    if: github.event_name != 'pull_request' && github.event.repository.private == false
     steps:
       - uses: actions/checkout@v4
       - uses: hacs/action@main
