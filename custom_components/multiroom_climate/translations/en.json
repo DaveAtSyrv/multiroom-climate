@@ -7,11 +7,13 @@
         "data": {
           "name": "Name",
           "climate_entity": "Thermostat to control",
-          "target_sensors": "Target temperature sensors"
+          "target_sensors": "Target temperature sensors",
+          "humidity_sensor": "Humidity sensor (optional)"
         },
         "data_description": {
           "climate_entity": "The thermostat this controller will drive (kept in its AUTO band).",
-          "target_sensors": "The room sensors whose weighted average is the temperature to hold."
+          "target_sensors": "The room sensors whose weighted average is the temperature to hold.",
+          "humidity_sensor": "Optional. When set, cooling overcools slightly while humidity is above target to wring out moisture."
         }
       }
     },

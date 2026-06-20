@@ -105,6 +105,7 @@ class MultiroomClimateEntity(
             "shadow_sensors_total": data.total_sensors,
             "shadow_target": data.target,
             "shadow_learned_offset": round(data.learned_offset, 2),
+            "shadow_humidity": data.humidity,  # RH decide() saw (None = no sensor/stale → overcool off)
         }
         proposed = data.proposed
         if proposed is not None:
