@@ -29,6 +29,7 @@ from homeassistant.components.climate import (
     ATTR_MIN_TEMP,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
+    ATTR_TARGET_TEMP_STEP,
     DOMAIN as CLIMATE_DOMAIN,
     FAN_AUTO,
     FAN_ON,
@@ -183,6 +184,7 @@ class _WrappedReading:
     band_high: float | None
     temp_min: float | None
     temp_max: float | None
+    target_temp_step: float | None
     fan_mode: str | None
     fan_modes: tuple[str, ...]
 
@@ -215,6 +217,7 @@ _NO_READING = _WrappedReading(
     band_high=None,
     temp_min=None,
     temp_max=None,
+    target_temp_step=None,
     fan_mode=None,
     fan_modes=(),
 )
@@ -237,6 +240,9 @@ class CoordinatorData:
     hvac_modes: tuple[HVACMode, ...]
     band_low: float | None
     band_high: float | None
+    temp_min: float | None  # wrapped thermostat's lower bound — bounds the house-target dial
+    temp_max: float | None  # wrapped thermostat's upper bound — bounds the house-target dial
+    target_temp_step: float | None  # wrapped thermostat's step (None = HA default) for the house-target dial
     target: float | None
     scheduled: float | None  # day/night setpoint for now (None = no schedule); drives the target at transitions
     learned_offset: float
@@ -426,6 +432,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             band_high=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH), float),
             temp_min=convert(wrapped.attributes.get(ATTR_MIN_TEMP), float),
             temp_max=convert(wrapped.attributes.get(ATTR_MAX_TEMP), float),
+            target_temp_step=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_STEP), float),
             fan_mode=wrapped.attributes.get(ATTR_FAN_MODE),
             fan_modes=tuple(wrapped.attributes.get(ATTR_FAN_MODES, [])),
         )
@@ -591,6 +598,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             hvac_modes=wrapped.hvac_modes,
             band_low=wrapped.band_low,
             band_high=wrapped.band_high,
+            temp_min=wrapped.temp_min,
+            temp_max=wrapped.temp_max,
+            target_temp_step=wrapped.target_temp_step,
             target=self._target,
             scheduled=scheduled,
             learned_offset=self._learned_offset,

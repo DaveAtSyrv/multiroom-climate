@@ -282,3 +282,46 @@ async def test_surfaces_failsafe_notify(
     assert state is not None
     assert state.attributes["shadow_status"] == "failsafe"
     assert "shadow_notify" in state.attributes
+
+
+async def test_target_dial_mirrors_wrapped_bounds(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # The house-target dial adopts the wrapped thermostat's range + step, not HA's generic defaults.
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.living_room", "70.0")
+    hass.states.async_set("sensor.kitchen", "70.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {
+            "hvac_modes": ["off", "heat_cool"],
+            "target_temp_low": 67.0,
+            "target_temp_high": 69.0,
+            "min_temp": 50.0,
+            "max_temp": 90.0,
+            "target_temp_step": 1.0,
+        },
+    )
+    entity_id = await _setup(hass)
+    state = hass.states.get(entity_id)
+
+    assert state is not None
+    assert state.attributes["min_temp"] == 50.0
+    assert state.attributes["max_temp"] == 90.0
+    assert state.attributes["target_temp_step"] == 1.0
+
+
+async def test_target_dial_falls_back_without_wrapped_bounds(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # No bounds advertised → fall back to HA's generic range gracefully (no crash, min < max).
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.living_room", "70.0")
+    hass.states.async_set("sensor.kitchen", "70.0")
+    hass.states.async_set("climate.daikin", "heat_cool", {"hvac_modes": ["off", "heat_cool"]})
+    entity_id = await _setup(hass)
+    state = hass.states.get(entity_id)
+
+    assert state is not None
+    assert state.attributes["min_temp"] < state.attributes["max_temp"]
