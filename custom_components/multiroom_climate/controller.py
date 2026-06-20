@@ -16,6 +16,12 @@ steady-state error**. That is precisely what silently absorbs the thermostat's o
 Do **not** "simplify" this into a proportional *position* controller
 (``band = target ± kp * error``): that reintroduces a permanent steady-state offset and defeats the
 whole purpose of the integration. The accumulation is the point.
+
+Scope boundary: this engine answers "given that we are controlling, what band next?" It deliberately
+does **not** own the master enable / kill switch. Whether to call ``decide()`` at all, and the
+OFF→manual handback (restoring the user's setpoint so the thermostat takes over), are the
+coordinator's responsibility — ``decide()`` returning ``set_band=False`` only ever means "hold", which
+is not the same as "return to manual".
 """
 
 from __future__ import annotations
@@ -54,9 +60,6 @@ class ControllerConfig:
 @dataclass(frozen=True)
 class ControllerInputs:
     """A single snapshot of everything ``decide()`` needs. Caller assembles this from HA state."""
-
-    enabled: bool
-    """Master enable. False = the controller proposes no writes (see module/SPEC notes)."""
 
     available: bool
     """Whether the target sensor(s) are fresh and usable. False triggers the failsafe."""
@@ -97,9 +100,6 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     Gate order is deliberately a flat sequence so PR-#4 feedforward can slot in at the marked
     seam (right after the failsafe) and *bypass* the deadband + rate-limit gates below.
     """
-    if not inputs.enabled:
-        return Action(set_band=False, reason="disabled")
-
     # Failsafe: never drive HVAC off a missing or stale reading.
     if not inputs.available:
         return Action(

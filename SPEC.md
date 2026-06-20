@@ -20,7 +20,7 @@ integration that targets a **weighted house average** and auto-discovers/compens
   the reference community integration ships **no LICENSE** (all-rights-reserved) → we may reimplement
   only from documented API fields, never copy its source. Adds token-refresh/reauth handling.
 
-The control engine is a **pure `controller.py` `compute(state, config) -> Action`** with zero HA
+The control engine is a **pure `controller.py` `decide(inputs, config) -> Action`** with zero HA
 calls, so it's fully unit-testable and transport-agnostic — the same logic serves W (write to
 `climate.set_temperature`) and D (write to the Skyport API).
 
@@ -82,7 +82,7 @@ custom_components/multiroom_climate/
   config_flow.py     # ConfigFlow + OptionsFlow (v2: + reauth)
   coordinator.py     # DataUpdateCoordinator: read wrapped climate + sensors each tick
   climate.py         # ClimateEntity: AUTO/HEAT/COOL/OFF, current_temperature = house avg, day/night presets
-  controller.py      # PURE compute(state, config) -> Action  (no HA calls) — the unit-test core
+  controller.py      # PURE decide(inputs, config) -> Action  (no HA calls) — the unit-test core
   strings.json + translations/en.json
 tests/               # pytest-homeassistant-custom-component; test_controller.py is pure (no hass)
 hacs.json · LICENSE (MIT) · README.md · brand/ icons (coined mark, not Daikin's)
