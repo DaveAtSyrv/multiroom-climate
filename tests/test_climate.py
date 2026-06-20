@@ -6,7 +6,7 @@ house average, mirrors the wrapped thermostat, reports in the system unit, and w
 
 from __future__ import annotations
 
-from homeassistant.components.climate import HVACMode
+from homeassistant.components.climate import ClimateEntityFeature, HVACMode
 from homeassistant.core import HomeAssistant
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -48,8 +48,9 @@ async def test_reports_house_average_and_mirrors_mode(
     assert state is not None
     assert state.state == HVACMode.HEAT_COOL
     assert state.attributes["current_temperature"] == 22.0
-    # Read-only: it advertises no setpoint features and never wrote to the wrapped thermostat.
-    assert state.attributes["supported_features"] == 0
+    # A single settable target alongside the mirrored heat_cool mode — HA renders this without a
+    # feature/mode-mismatch warning (the modeling decision, verified in-harness).
+    assert state.attributes["supported_features"] == ClimateEntityFeature.TARGET_TEMPERATURE
     assert hass.states.get("climate.daikin").state == "heat_cool"
 
 
@@ -163,6 +164,38 @@ async def test_unavailable_when_thermostat_missing(
 
     assert state is not None
     assert state.state == "unavailable"
+
+
+async def test_set_temperature_updates_target(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.living_room", "70.0")
+    hass.states.async_set("sensor.kitchen", "70.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {
+            "hvac_modes": ["off", "heat_cool"],
+            "target_temp_low": 67.0,
+            "target_temp_high": 69.0,
+            "min_temp": 45.0,
+            "max_temp": 95.0,
+        },
+    )
+    entity_id = await _setup(hass)
+
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": entity_id, "temperature": 72.0},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["temperature"] == 72.0  # the single settable setpoint
 
 
 async def test_remove_entry_deletes_stored_state(

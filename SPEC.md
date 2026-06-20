@@ -128,11 +128,11 @@ Each PR is single-purpose, reviewed with `/simplify`, issues fixed, then merged.
        `enabled AND proposed.set_band`; `last_change_ts` advances only on a *successful* write; a
        failed write is logged and swallowed. Enabling re-seeds the target ("hold where we are now");
        the wrapped band is the actuation interface, so our entity stays `supported_features = 0`. (#12)
-     - 5d-4b. ⬜ **NEXT:** user-settable target — give the entity its own `target_temperature`
-       (resolve single-vs-range HA modeling: verify `HEAT_COOL` + single setpoint against Versatile
-       Thermostat's `over_climate` + a harness test) wired to the same coordinator target. Must also
-       teach `set_enabled(reseed=True)` to *not* wipe a user-set target on re-enable (today it nulls
-       the seeded target; once the user picks one, re-enable should keep it).
+     - 5d-4b. ✅ User-settable target — the entity advertises a single `TARGET_TEMPERATURE`
+       (`HEAT_COOL` + single setpoint verified clean in-harness: no feature/mode-mismatch warning);
+       `async_set_temperature` hands it to `coordinator.async_set_target`, which feedforward-jumps
+       the band. A user-set target is flagged + persisted so re-enable keeps it (auto-seeded targets
+       still re-seed to "now"). (#13)
 6. ⬜ Humidity bias + fan-circulate layers.
 7. ⬜ Optimal-start + day/night setback wiring.
 8. ⬜ Brand assets, README polish, release `v0.1.0` as a custom HACS repo → tune live → submit to HACS
