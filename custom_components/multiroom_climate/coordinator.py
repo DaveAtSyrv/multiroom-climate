@@ -90,9 +90,7 @@ def _config_from_options(options: dict) -> ControllerConfig:
     """Overlay any configured day/night schedule on the base controller config.
 
     Empty options (schedule never configured) fall through to plain ``ControllerConfig()`` defaults via
-    the per-field ``.get(..., default)`` fallbacks. The schedule fields are inert until the coordinator
-    calls ``scheduled_target()`` (7c); 7b only plumbs them so a change in the options flow is observable
-    end-to-end (options → ``ControllerConfig``).
+    the per-field ``.get(..., default)`` fallbacks.
     """
     base = ControllerConfig()
     return replace(
@@ -138,7 +136,7 @@ def build_device_info(entry: ConfigEntry) -> DeviceInfo:
 def house_average(temps: list[float]) -> float | None:
     """Equal-weight mean of the valid sensor temperatures, or None if there are none.
 
-    Per-sensor weights are an options-flow feature for a later PR; for now every sensor counts equally.
+    Per-sensor weights are a v2 feature; v1 weights every sensor equally.
     """
     return sum(temps) / len(temps) if temps else None
 
@@ -288,9 +286,10 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._learned_offset: float = 0.0
         self._last_change_ts: float = 0.0
         self._last_scheduled: float | None = None
-        # Whether the target was explicitly set (via async_set_target — a user today, a schedule in
-        # step 7) vs auto-seeded. An explicit target is kept across an enable toggle; an auto-seeded
-        # one is re-seeded to "now" (see set_enabled).
+        # Whether the user explicitly set the target (via async_set_target) vs auto-seeded. An
+        # explicit target is kept across an enable toggle; an auto-seeded one is re-seeded to "now"
+        # (see set_enabled). Schedule transitions set the target directly and leave this False on
+        # purpose, so the re-enable re-seed still works (see _apply_schedule).
         self._target_user_set: bool = False
 
         # Master enable (the kill switch). Default off: a fresh install is inert until the user opts
