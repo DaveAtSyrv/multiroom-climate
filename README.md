@@ -158,6 +158,30 @@ v1 keeps the control model deliberately simple. Current limitations (most lifted
 - **The stale-sensor failsafe doesn't notify yet.** If every sensor goes stale it freezes the setpoint
   and surfaces a `shadow_notify` message, but doesn't actually send a notification.
 
+## Troubleshooting
+
+The climate entity exposes `shadow_*` diagnostic attributes that explain what the controller is doing
+each tick — start there. `shadow_status` is the one-word reason for the current tick.
+
+- **The thermostat never moves.** The master switch is **off by default**; the integration only
+  observes until you turn the `<name> control` switch on. With it off, the `shadow_*` attributes still
+  show what it *would* do, so you can confirm the decision before enabling.
+- **`shadow_status: no_thermostat_band`.** The wrapped thermostat isn't exposing a low/high band. Put
+  it in its **heat/cool (AUTO)** mode — the controller regulates by sliding those setpoints, which
+  only exist in that mode.
+- **`shadow_status: waiting_for_first_reading`.** No usable sensor reading yet. Check that your
+  selected room sensors report a numeric temperature; `shadow_sensors_fresh` / `shadow_sensors_total`
+  show how many are usable.
+- **The climate entity is unavailable.** The wrapped thermostat is itself unavailable or was removed —
+  check the integration that provides it. If it's gone for good, a repair issue prompts you to restore
+  it or reconfigure.
+- **It's holding the wrong temperature.** The target is the **average** of the sensors you picked.
+  Check the selected sensors (and that none read wildly off); reconfigure to change the set.
+- **A schedule change didn't take effect.** Enabling a schedule mid-period is inert until the next
+  day↔night transition — that's expected.
+- **The fan won't switch (`shadow_fan_blocked`).** Fan-circulate only manages the on/auto pair; a
+  manual fan speed, or a mode the thermostat doesn't advertise, is left untouched.
+
 ## License
 
 [MIT](LICENSE)
