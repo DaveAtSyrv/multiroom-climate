@@ -92,6 +92,66 @@ a manual hold until then.
 - Diagnostic `shadow_*` attributes on the climate entity expose what the controller is doing (target,
   learned offset, sensor freshness, proposed band, scheduled setpoint) — handy while tuning.
 
+## Examples
+
+Entity IDs below assume the default name "Multiroom Climate" (`climate.multiroom_climate`,
+`switch.multiroom_climate_control`) — adjust them to match your setup.
+
+**Hand control to Multiroom Climate when you're home, back to the thermostat when away:**
+
+```yaml
+automation:
+  - alias: Multiroom Climate on when home
+    triggers:
+      - trigger: state
+        entity_id: person.you
+        to: home
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.multiroom_climate_control
+
+  - alias: Multiroom Climate off when away
+    triggers:
+      - trigger: state
+        entity_id: person.you
+        to: not_home
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.multiroom_climate_control
+```
+
+**Get notified when the stale-sensor failsafe trips** (the integration freezes the setpoint but
+doesn't notify on its own — see [Known limitations](#known-limitations)):
+
+```yaml
+automation:
+  - alias: Alert on Multiroom Climate failsafe
+    triggers:
+      - trigger: state
+        entity_id: climate.multiroom_climate
+        attribute: shadow_status
+        to: failsafe
+    actions:
+      - action: notify.notify
+        data:
+          message: Multiroom Climate lost its room sensors and is holding the thermostat.
+```
+
+**Set the house target from a script** (e.g. for a scene or a dashboard button):
+
+```yaml
+script:
+  comfortable:
+    sequence:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.multiroom_climate
+        data:
+          temperature: 71
+```
+
 ## How it updates
 
 Multiroom Climate is a **local-polling** integration — no cloud, no push. A single coordinator polls
