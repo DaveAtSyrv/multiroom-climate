@@ -1,0 +1,124 @@
+# Home Assistant Integration Quality Scale progress tracker.
+#
+# This is an internal checklist (the integration is a custom/HACS component, which HA does not
+# formally score). Each rule is `done`, `todo`, or `status: exempt` with a reason. Tiers are
+# cumulative: Bronze, then Silver, then Gold, then Platinum.
+
+rules:
+  # ---- Bronze ----
+  action-setup:
+    status: exempt
+    comment: The integration registers no service actions.
+  appropriate-polling: done  # DataUpdateCoordinator, 60s interval.
+  brands:
+    status: todo
+    comment: Blocked on the public release — needs a PR to home-assistant/brands. The user's call.
+  common-modules: done  # coordinator.py / controller.py / const.py.
+  config-flow: done
+  config-flow-test-coverage: done  # test_config_flow.py; 100% coverage.
+  dependency-transparency:
+    status: exempt
+    comment: No external runtime dependencies (manifest requirements is empty).
+  docs-actions:
+    status: exempt
+    comment: No service actions to document.
+  docs-high-level-description: done  # README intro.
+  docs-installation-instructions: done  # README "Installation" (HACS + manual).
+  docs-removal-instructions: done  # README "Removing the integration".
+  entity-event-setup: done  # switch restores in async_added_to_hass; climate is a CoordinatorEntity.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done  # entry.runtime_data.
+  test-before-configure:
+    status: exempt
+    comment: No external connection to test; the config flow's EntitySelectors only offer existing entities.
+  test-before-setup:
+    status: todo
+    comment: Consider raising ConfigEntryNotReady when the wrapped thermostat isn't present at setup.
+  unique-config-entry: done  # unique_id = wrapped entity; aborts if already configured.
+
+  # ---- Silver ----
+  action-exceptions:
+    status: exempt
+    comment: No service actions.
+  config-entry-unloading: done  # async_unload_entry.
+  docs-configuration-parameters:
+    status: todo
+    comment: Confirm the README documents every options-flow (schedule) parameter.
+  docs-installation-parameters: done  # README "Setup" lists thermostat / sensors / humidity.
+  entity-unavailable: done  # climate.available follows thermostat presence.
+  integration-owner: done  # manifest codeowners.
+  log-when-unavailable:
+    status: todo
+    comment: Log once when the thermostat/sensors drop and once when they return (no spam).
+  parallel-updates: done  # PARALLEL_UPDATES = 0 on both platforms.
+  reauthentication-flow:
+    status: exempt
+    comment: Wraps a user-picked climate entity; the integration holds no credentials of its own.
+  test-coverage: done  # 100% statement + branch (Silver wants >95%).
+
+  # ---- Gold ----
+  devices: done  # virtual SERVICE device groups the entities.
+  diagnostics: done  # diagnostics.py.
+  discovery:
+    status: exempt
+    comment: Wraps a user-picked entity; there is nothing to auto-discover.
+  discovery-update-info:
+    status: exempt
+    comment: No discovery transport.
+  docs-data-update:
+    status: todo
+    comment: Document how data is fetched (60s coordinator poll of sensors + wrapped thermostat).
+  docs-examples:
+    status: todo
+    comment: Add automation/usage examples to the docs.
+  docs-known-limitations:
+    status: todo
+    comment: Surface the v1 limitations (symmetric optimal-start lead, equal-weight average, etc.).
+  docs-supported-devices:
+    status: todo
+    comment: Make the Daikin Skyport / wrapped-climate compatibility an explicit section.
+  docs-supported-functions: done  # README "What it does".
+  docs-troubleshooting:
+    status: todo
+    comment: Add a troubleshooting section.
+  docs-use-cases:
+    status: todo
+    comment: Add an explicit use-cases section (the intro hints at one).
+  dynamic-devices:
+    status: exempt
+    comment: A single wrapped entity; no dynamic device set.
+  entity-category:
+    status: todo
+    comment: Decide whether the master-enable switch should be EntityCategory.CONFIG (vs primary control) and document it.
+  entity-device-class:
+    status: exempt
+    comment: Climate has no device-class concept; the switch's default class is appropriate.
+  entity-disabled-by-default:
+    status: exempt
+    comment: Both entities are primary and useful; none should be disabled by default.
+  entity-translations: done  # switch uses translation_key "control"; climate takes the device name.
+  exception-translations:
+    status: todo
+    comment: Confirm any user-facing exceptions use translation keys (most write failures are logged/swallowed).
+  icon-translations:
+    status: todo
+    comment: switch.py hard-codes _attr_icon = "mdi:thermostat-auto"; move it to icons.json.
+  reconfiguration-flow: done  # async_step_reconfigure.
+  repair-issues:
+    status: todo
+    comment: Consider a repair issue when the wrapped thermostat is removed/long-unavailable (exempt if it adds more noise than value).
+  stale-devices:
+    status: exempt
+    comment: No remote device set that can go stale.
+
+  # ---- Platinum ----
+  async-dependency:
+    status: exempt
+    comment: No external dependency.
+  inject-websession:
+    status: exempt
+    comment: No external dependency / no HTTP session.
+  strict-typing:
+    status: todo
+    comment: Add a strict mypy config + ship a py.typed marker and make strict mypy pass.

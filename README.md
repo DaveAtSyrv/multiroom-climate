@@ -78,6 +78,18 @@ a manual hold until then.
 - Diagnostic `shadow_*` attributes on the climate entity expose what the controller is doing (target,
   learned offset, sensor freshness, proposed band, scheduled setpoint) — handy while tuning.
 
+## Removing the integration
+
+1. **Settings → Devices & Services → Multiroom Climate**, open the **⋮** menu on the entry and choose
+   **Delete**. Repeat for each entry if you set up more than one thermostat.
+2. *(If installed via HACS)* In **HACS**, open **Multiroom Climate → ⋮ → Remove**, then restart Home
+   Assistant.
+
+Deleting an entry removes its climate and switch entities and the device, and **deletes the
+integration's stored control state** (the learned sensor-bias offset and the held target). The wrapped
+thermostat itself is left untouched and returns to manual control — its current AUTO band is kept as-is
+(already bias-compensated for current conditions), so there's no jump on handback.
+
 ## Status
 
 Early development. See [SPEC.md](SPEC.md) for the full design and roadmap.
