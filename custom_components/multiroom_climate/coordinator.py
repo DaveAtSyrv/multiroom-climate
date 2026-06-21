@@ -587,8 +587,11 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         if available and self._target is None:
             self._target = house_avg
             self._last_target = house_avg
-        # Non-None by construction: available→seeded just above; the failsafe path is only reached
-        # via _evaluate with self._target already set (it gates on `self._target is not None`).
+        # Narrowed locally rather than threaded in as a typed param like `bounds`: unlike that pure
+        # extraction, the target's non-None-ness is bundled with the seed *write* just above, which
+        # belongs to this method's learning-state contract — so the asymmetry is deliberate. Non-None
+        # by construction: available→seeded above; the failsafe path is only reached via _evaluate
+        # under `if self._target is not None`.
         target = self._target
         assert target is not None
 
