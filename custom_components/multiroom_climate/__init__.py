@@ -13,8 +13,15 @@ from __future__ import annotations
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 
-from .coordinator import MultiroomClimateCoordinator, MultiroomConfigEntry, build_store
+from .const import DOMAIN
+from .coordinator import (
+    MultiroomClimateCoordinator,
+    MultiroomConfigEntry,
+    build_store,
+    thermostat_missing_issue_id,
+)
 
 _PLATFORMS = [Platform.CLIMATE, Platform.SWITCH]
 
@@ -39,7 +46,12 @@ async def _async_update_listener(hass: HomeAssistant, entry: MultiroomConfigEntr
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry, clearing any standing 'thermostat missing' repair issue.
+
+    Clearing on unload means reconfiguring to a different thermostat (reconfigure → reload → unload)
+    resolves a stale issue cleanly; if the thermostat is still missing the next setup re-raises it.
+    """
+    ir.async_delete_issue(hass, DOMAIN, thermostat_missing_issue_id(entry.entry_id))
     return await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)
 
 

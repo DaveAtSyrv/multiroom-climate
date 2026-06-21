@@ -15,6 +15,7 @@ import pytest
 from homeassistant.components.climate import HVACMode
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -35,11 +36,13 @@ from custom_components.multiroom_climate.const import (
 )
 from custom_components.multiroom_climate.controller import ControllerConfig
 from custom_components.multiroom_climate.coordinator import (
+    _THERMOSTAT_MISSING_TICKS,
     MultiroomClimateCoordinator,
     _config_from_options,
     _time_to_minutes,
     house_average,
     spread,
+    thermostat_missing_issue_id,
 )
 
 
@@ -975,3 +978,87 @@ async def test_partial_sensor_loss_does_not_log(
         await coordinator._async_update_data()
 
     assert _logs(caplog, "WARNING", "target temperature sensors") == []
+
+
+# --- Repair issue for a removed/missing wrapped thermostat (repair_issues) ---
+
+
+def _missing_issue(hass: HomeAssistant, coordinator: MultiroomClimateCoordinator):
+    return ir.async_get(hass).async_get_issue(DOMAIN, coordinator._missing_issue_id)
+
+
+async def test_missing_thermostat_raises_repair_only_after_threshold(
+    hass: HomeAssistant,
+) -> None:
+    # Thermostat absent from the state machine (removed/never loaded). The repair must not fire on a
+    # brief absence (the startup-ordering race) — only after a sustained run of absent polls.
+    hass.states.async_set("sensor.a", "70.0")
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    for _ in range(_THERMOSTAT_MISSING_TICKS - 1):
+        await coordinator._async_update_data()
+    assert _missing_issue(hass, coordinator) is None
+
+    await coordinator._async_update_data()  # crosses the threshold
+    assert _missing_issue(hass, coordinator) is not None
+
+
+async def test_missing_thermostat_repair_clears_when_it_returns(hass: HomeAssistant) -> None:
+    hass.states.async_set("sensor.a", "70.0")
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    for _ in range(_THERMOSTAT_MISSING_TICKS):
+        await coordinator._async_update_data()
+    assert _missing_issue(hass, coordinator) is not None
+
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    await coordinator._async_update_data()
+    assert _missing_issue(hass, coordinator) is None
+
+
+async def test_unavailable_thermostat_raises_no_repair(hass: HomeAssistant) -> None:
+    # A registered-but-unavailable thermostat is a transient outage owned by log_when_unavailable,
+    # NOT a missing-entity config error — it must never raise the repair, even after a long absence.
+    # (This is the discriminator that keeps repair_issues distinct from log_when_unavailable.)
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", "unavailable")
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    for _ in range(_THERMOSTAT_MISSING_TICKS + 2):
+        await coordinator._async_update_data()
+
+    assert _missing_issue(hass, coordinator) is None
+
+
+async def test_unload_clears_thermostat_repair_issue(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # Reconfiguring to a different thermostat goes reconfigure → reload → unload; unloading must clear
+    # a standing repair issue so a stale one doesn't linger.
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="climate.daikin",
+        data={CONF_CLIMATE_ENTITY: "climate.daikin", CONF_TARGET_SENSORS: ["sensor.a"]},
+        title="Test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    issue_id = thermostat_missing_issue_id(entry.entry_id)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="thermostat_missing",
+        translation_placeholders={"entity_id": "climate.daikin"},
+    )
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

@@ -111,8 +111,15 @@ rules:
   icon-translations: done  # switch icon moved from _attr_icon to icons.json (entity.switch.control.default).
   reconfiguration-flow: done  # async_step_reconfigure.
   repair-issues:
-    status: todo
-    comment: Consider a repair issue when the wrapped thermostat is removed/long-unavailable (exempt if it adds more noise than value).
+    status: done
+    comment: >-
+      Raises a repair issue when the wrapped thermostat is *absent from the state machine*
+      (removed/renamed/never-loaded) for a sustained run of polls (~5 min, to outlast slow
+      startup/reload), cleared when it returns or on unload. Deliberately scoped to a truly-missing
+      entity: a registered-but-unavailable thermostat is transient and owned by log_when_unavailable
+      (the accepted gap is a thermostat that stays registered but permanently dead — logging covers
+      that, not a repair). is_fixable=False (informational; the description tells the user to restore
+      the entity or reconfigure).
   stale-devices:
     status: exempt
     comment: No remote device set that can go stale.

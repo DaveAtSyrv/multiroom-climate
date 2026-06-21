@@ -40,6 +40,7 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -112,6 +113,15 @@ _STATUS_WAITING = "waiting_for_first_reading"
 _STORE_VERSION = 1
 _SAVE_DELAY_S = 600.0
 
+# Repair issue: a wrapped thermostat that's *absent from the state machine* (removed/renamed/never
+# loaded) is a config problem the user must fix — surfaced as a repair issue. It must outlast a slow
+# startup or reload (the source integration loading after our first poll), so it's raised only after
+# this many consecutive absent polls (at the 60s interval, ~5 min of continuous absence). A
+# thermostat that stays *registered but unavailable* is transient and owned by log_when_unavailable;
+# only a truly-missing entity escalates here.
+_THERMOSTAT_MISSING_ISSUE = "thermostat_missing"
+_THERMOSTAT_MISSING_TICKS = 5
+
 
 def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, float | bool | None]]:
     """The per-config-entry Store holding the coordinator's control state.
@@ -119,6 +129,14 @@ def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, floa
     A module-level factory so entry removal can delete the file without constructing a coordinator.
     """
     return Store(hass, _STORE_VERSION, f"{DOMAIN}.{entry.entry_id}")
+
+
+def thermostat_missing_issue_id(entry_id: str) -> str:
+    """The per-entry repair-issue id for a removed/missing wrapped thermostat.
+
+    A module-level helper so ``async_unload_entry`` can clear the issue without a coordinator.
+    """
+    return f"{entry_id}_{_THERMOSTAT_MISSING_ISSUE}"
 
 
 def build_device_info(entry: ConfigEntry) -> DeviceInfo:
@@ -345,6 +363,11 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         # silent (see _Availability / _log_availability).
         self._thermostat_avail = _Availability()
         self._sensors_avail = _Availability()
+
+        # Repair issue for a removed/missing wrapped thermostat (see _reconcile_thermostat_repair).
+        # Counts consecutive polls where the entity is absent from the state machine.
+        self._missing_issue_id = thermostat_missing_issue_id(entry.entry_id)
+        self._thermostat_missing_ticks = 0
 
     async def async_load_state(self) -> None:
         """Restore persisted control state before the first refresh.
@@ -604,6 +627,33 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         except Exception as err:  # noqa: BLE001 - a failed write must not break the update
             _LOGGER.warning("Failed to set %s fan mode: %s", self._wrapped, err)
 
+    @callback
+    def _reconcile_thermostat_repair(self) -> None:
+        """Raise/clear a repair issue when the wrapped thermostat is *absent* (removed/renamed).
+
+        Scoped to a truly-missing entity (``states.get`` is ``None``), not a registered-but-
+        unavailable one — a brief or long outage of an existing entity is transient and owned by
+        ``log_when_unavailable``. The issue is raised only after ``_THERMOSTAT_MISSING_TICKS``
+        consecutive absent polls so a slow startup/reload can't false-positive, and is cleared
+        (idempotently) the moment the entity reappears — which also self-heals a stale issue left
+        over from a previous session.
+        """
+        if self.hass.states.get(self._wrapped) is not None:
+            self._thermostat_missing_ticks = 0
+            ir.async_delete_issue(self.hass, DOMAIN, self._missing_issue_id)
+            return
+        self._thermostat_missing_ticks += 1
+        if self._thermostat_missing_ticks >= _THERMOSTAT_MISSING_TICKS:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self._missing_issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=_THERMOSTAT_MISSING_ISSUE,
+                translation_placeholders={"entity_id": self._wrapped},
+            )
+
     async def _async_update_data(self) -> CoordinatorData:
         before = self._persisted_state()
         temps = self._read_sensors()
@@ -627,6 +677,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             on_lost=f"All target temperature sensors ({', '.join(self._sensors)}) are unavailable; holding the thermostat band until one returns",
             on_back="A target temperature sensor is available again; resuming regulation",
         )
+        # Escalate a sustained *missing* (removed/renamed) thermostat to a user-actionable repair.
+        self._reconcile_thermostat_repair()
         # Day/night schedule re-asserts the target at transitions (before decide() runs this tick).
         scheduled = self._apply_schedule()
         proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
