@@ -74,9 +74,7 @@ rules:
   docs-known-limitations:
     status: todo
     comment: Surface the v1 limitations (symmetric optimal-start lead, equal-weight average, etc.).
-  docs-supported-devices:
-    status: todo
-    comment: Make the Daikin Skyport / wrapped-climate compatibility an explicit section.
+  docs-supported-devices: done  # README "Supported devices" — heat/cool-band requirement, tested Daikin Skyport, single-setpoint unsupported.
   docs-supported-functions: done  # README "What it does".
   docs-troubleshooting:
     status: todo
