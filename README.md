@@ -110,11 +110,21 @@ thermostat itself is left untouched and returns to manual control — its curren
 
 Early development. See [SPEC.md](SPEC.md) for the full design and roadmap.
 
-## Compatibility
+## Supported devices
 
-v1 wraps an existing `climate.*` entity (works today with the community
-[apetrycki/daikinskyport](https://github.com/apetrycki/daikinskyport) integration for Daikin Skyport).
-A self-contained direct-API path is planned for v2.
+Multiroom Climate doesn't talk to any thermostat directly; it wraps an existing Home Assistant
+`climate.*` entity. A thermostat works as long as that entity exposes a **heat/cool (AUTO) band**
+(separate low/high setpoints, `target_temp_low` / `target_temp_high`, plus min/max bounds), because
+the controller regulates by sliding that band.
+
+- **Tested with:** Daikin Skyport thermostats, via the community
+  [apetrycki/daikinskyport](https://github.com/apetrycki/daikinskyport) integration.
+- **Should work with:** any `climate.*` entity that supports a heat/cool band (most multi-stage and
+  heat-pump thermostats, in their AUTO mode).
+- **Not supported:** single-setpoint thermostats (heat-only or cool-only — one target temperature, no
+  AUTO band); there's nothing for the controller to slide.
+
+A self-contained direct-API path (no wrapped entity required) is planned for v2.
 
 ## License
 
