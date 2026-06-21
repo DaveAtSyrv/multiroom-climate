@@ -160,7 +160,11 @@ def _schedule_schema(unit: str, options: dict[str, Any]) -> vol.Schema:
     temp_min, temp_max = (40.0, 95.0) if fahrenheit else (5.0, 35.0)
     temp_selector = selector.NumberSelector(
         selector.NumberSelectorConfig(
-            min=temp_min, max=temp_max, step=0.5, unit_of_measurement=unit, mode="box"
+            min=temp_min,
+            max=temp_max,
+            step=0.5,
+            unit_of_measurement=unit,
+            mode=selector.NumberSelectorMode.BOX,
         )
     )
     return vol.Schema(
@@ -188,7 +192,11 @@ def _schedule_schema(unit: str, options: dict[str, Any]) -> vol.Schema:
                 default=options.get(CONF_OPTIMAL_START_LEAD, int(base.optimal_start_lead_min)),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
-                    min=0, max=240, step=5, unit_of_measurement="min", mode="box"
+                    min=0,
+                    max=240,
+                    step=5,
+                    unit_of_measurement="min",
+                    mode=selector.NumberSelectorMode.BOX,
                 )
             ),
         }

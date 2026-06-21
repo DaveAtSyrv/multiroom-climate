@@ -125,5 +125,9 @@ rules:
     status: exempt
     comment: No external dependency / no HTTP session.
   strict-typing:
-    status: todo
-    comment: Add a strict mypy config + ship a py.typed marker and make strict mypy pass.
+    status: done
+    comment: >-
+      mypy.ini (strict + implicit_reexport for HA's public API), a py.typed marker, mypy pinned in
+      requirements_test.txt, and a "Strict typing" CI job. Strict mypy passes on all 8 modules; the
+      genuine type issues it surfaced were fixed in code (a _PersistedState TypedDict, a typed
+      band_and_bounds() accessor, NumberSelectorMode.BOX) rather than suppressed.
