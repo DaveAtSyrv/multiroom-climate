@@ -126,6 +126,24 @@ the controller regulates by sliding that band.
 
 A self-contained direct-API path (no wrapped entity required) is planned for v2.
 
+## Known limitations
+
+v1 keeps the control model deliberately simple. Current limitations (most lifted in later versions):
+
+- **Rooms are weighted equally.** The target is a plain average of the chosen sensors; per-room
+  weighting is a v2 feature.
+- **One house-wide schedule.** The day/night setback uses a single pair of setpoints for the whole
+  house — no per-room target switching.
+- **Fixed, symmetric optimal-start lead.** One lead time pulls *both* the day and night transitions
+  earlier by the same amount; it isn't learned or occupancy-aware.
+- **Humidity is a bounded overcool only.** In cooling season it overcools by a capped amount when
+  humidity is high — not true dehumidify-demand control (that needs the v2 direct API).
+- **Fan-circulate can't tell whose "on" it is.** If you set the thermostat fan to continuous yourself,
+  it's returned to auto once the rooms re-converge — the integration doesn't distinguish a manual `on`
+  from its own.
+- **The stale-sensor failsafe doesn't notify yet.** If every sensor goes stale it freezes the setpoint
+  and surfaces a `shadow_notify` message, but doesn't actually send a notification.
+
 ## License
 
 [MIT](LICENSE)
