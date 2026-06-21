@@ -33,8 +33,13 @@ rules:
     status: exempt
     comment: No external connection to test; the config flow's EntitySelectors only offer existing entities.
   test-before-setup:
-    status: todo
-    comment: Consider raising ConfigEntryNotReady when the wrapped thermostat isn't present at setup.
+    status: exempt
+    comment: >-
+      Wraps an intra-HA climate entity, not an external I/O service. A temporarily-absent
+      thermostat is handled via entity availability rather than deferring setup — matching HA's
+      own wrapping helpers (threshold/derivative/min_max/group/integration/utility_meter), none of
+      which raise ConfigEntryNotReady for a missing source entity. Raising would force-fail setup
+      and contradict the deliberate available-when-thermostat-missing design.
   unique-config-entry: done  # unique_id = wrapped entity; aborts if already configured.
 
   # ---- Silver ----
