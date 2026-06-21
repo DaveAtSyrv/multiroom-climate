@@ -106,8 +106,13 @@ rules:
     comment: Both entities are primary and useful; none should be disabled by default.
   entity-translations: done  # switch uses translation_key "control"; climate takes the device name.
   exception-translations:
-    status: todo
-    comment: Confirm any user-facing exceptions use translation keys (most write failures are logged/swallowed).
+    status: exempt
+    comment: >-
+      The integration raises no user-facing exceptions (no `raise` in any module). Write failures to
+      the wrapped thermostat are deliberately caught and logged/swallowed so a bad write can't break
+      the coordinator (it self-corrects next tick); config-flow problems surface via the translated
+      `errors`/`abort` strings, not exceptions; and async_set_temperature clamps via the band rather
+      than raising. Nothing to translate — there's no exception path to a translation_key.
   icon-translations: done  # switch icon moved from _attr_icon to icons.json (entity.switch.control.default).
   reconfiguration-flow: done  # async_step_reconfigure.
   repair-issues:
