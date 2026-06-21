@@ -25,6 +25,20 @@ manual "set it to 67 to hold the house at 70" trick becomes automatic and self-a
 - **Stale-sensor failsafe** + a **master enable** toggle that instantly hands control back to the
   thermostat.
 
+## Use cases
+
+- **A house that heats or cools unevenly.** When the thermostat sits in the warmest (or coolest) spot,
+  the rest of the house runs off-target. Hold the average of the rooms you actually use instead.
+- **Automating the "set it to 67 to get 70" workaround.** If you already nudge the thermostat to
+  compensate for its own sensor, this learns that bias and applies it for you, and keeps adjusting as
+  conditions change.
+- **Night setback without a smart-thermostat schedule.** Set a lower night temperature and a morning
+  target; the optimal-start lead brings the house back to comfortable *by* the time you want it.
+- **Comfort in humid weather.** When cooling, it overcools by a small, capped amount while humidity is
+  high, so the house feels less clammy.
+- **Rooms that drift apart.** When one room runs much warmer or cooler than the rest, the fan
+  circulates to even things out, then backs off once they re-converge.
+
 ## Installation
 
 ### HACS (custom repository)

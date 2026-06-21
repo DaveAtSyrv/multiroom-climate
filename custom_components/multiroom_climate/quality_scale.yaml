@@ -77,9 +77,7 @@ rules:
   docs-troubleshooting:
     status: todo
     comment: Add a troubleshooting section.
-  docs-use-cases:
-    status: todo
-    comment: Add an explicit use-cases section (the intro hints at one).
+  docs-use-cases: done  # README "Use cases" — uneven house, automate the offset hack, night setback, humid comfort, destratify.
   dynamic-devices:
     status: exempt
     comment: A single wrapped entity; no dynamic device set.
