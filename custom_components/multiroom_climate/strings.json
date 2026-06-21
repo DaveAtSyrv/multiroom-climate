@@ -44,6 +44,12 @@
       }
     }
   },
+  "issues": {
+    "thermostat_missing": {
+      "title": "Multiroom Climate can't find its thermostat",
+      "description": "The thermostat `{entity_id}` that Multiroom Climate controls is no longer available in Home Assistant. Restore that entity (check the integration that provides it), or reconfigure Multiroom Climate to control a different thermostat. While it's missing, the integration can't regulate and your thermostat keeps its own settings."
+    }
+  },
   "options": {
     "step": {
       "init": {
