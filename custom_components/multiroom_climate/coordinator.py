@@ -18,9 +18,11 @@ Entities render ``CoordinatorData``; they never reach around the coordinator to 
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
+from typing import Any, TypedDict
 
 from homeassistant.components.climate import (
     ATTR_FAN_MODE,
@@ -88,7 +90,7 @@ def _time_to_minutes(value: str | None, default: float) -> float:
         return default
 
 
-def _config_from_options(options: dict) -> ControllerConfig:
+def _config_from_options(options: Mapping[str, Any]) -> ControllerConfig:
     """Overlay any configured day/night schedule on the base controller config.
 
     Empty options (schedule never configured) fall through to plain ``ControllerConfig()`` defaults via
@@ -124,7 +126,19 @@ _THERMOSTAT_MISSING_ISSUE = "thermostat_missing"
 _THERMOSTAT_MISSING_TICKS = 5
 
 
-def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, float | bool | None]]:
+class _PersistedState(TypedDict):
+    """The coordinator's persisted control state (one Store payload). Typed so a load narrows each
+    field to its real type instead of the heterogeneous ``float | bool | None`` union."""
+
+    learned_offset: float
+    target: float | None
+    last_target: float | None
+    last_change_ts: float
+    target_user_set: bool
+    last_scheduled: float | None
+
+
+def build_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[_PersistedState]:
     """The per-config-entry Store holding the coordinator's control state.
 
     A module-level factory so entry removal can delete the file without constructing a coordinator.
@@ -216,10 +230,18 @@ class _WrappedReading:
         """Whether the wrapped thermostat exists in a known HVAC mode (vs missing/unavailable)."""
         return self.hvac_mode is not None
 
-    @property
-    def has_band_and_bounds(self) -> bool:
-        """Whether decide() can run: a full AUTO band plus the equipment's temp bounds to clamp to."""
-        return None not in (self.band_low, self.band_high, self.temp_min, self.temp_max)
+    def band_and_bounds(self) -> tuple[float, float, float, float] | None:
+        """The ``(band_low, band_high, temp_min, temp_max)`` decide() needs, or ``None`` if any is
+        absent. Returning the four non-``None`` floats (rather than a bare bool) lets the caller pass
+        them straight through — decide() can't run without all four."""
+        if (
+            self.band_low is None
+            or self.band_high is None
+            or self.temp_min is None
+            or self.temp_max is None
+        ):
+            return None
+        return self.band_low, self.band_high, self.temp_min, self.temp_max
 
     @property
     def is_cooling(self) -> bool:
@@ -395,7 +417,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._last_scheduled = stored.get("last_scheduled")
 
     @callback
-    def _persisted_state(self) -> dict[str, float | bool | None]:
+    def _persisted_state(self) -> _PersistedState:
         return {
             "learned_offset": self._learned_offset,
             "target": self._target,
@@ -526,19 +548,26 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         The timestamp is returned so the caller can stamp ``last_change_ts`` with the same tick time
         *after* a successful write; it's ``None`` when ``decide()`` didn't run.
         """
-        if not wrapped.has_band_and_bounds:
+        bounds = wrapped.band_and_bounds()
+        if bounds is None:
             return None, _STATUS_NO_BAND, None
         if house_avg is not None:
-            action, now_ts = self._run_decide(house_avg, wrapped, humidity, available=True)
+            action, now_ts = self._run_decide(house_avg, wrapped, bounds, humidity, available=True)
             return action, action.reason, now_ts
         if self._target is not None:
             # Was regulating, then lost every sensor → failsafe (house_average is a don't-care here).
-            action, now_ts = self._run_decide(self._target, wrapped, humidity, available=False)
+            action, now_ts = self._run_decide(self._target, wrapped, bounds, humidity, available=False)
             return action, action.reason, now_ts
         return None, _STATUS_WAITING, None
 
     def _run_decide(
-        self, house_avg: float, wrapped: _WrappedReading, humidity: float | None, *, available: bool
+        self,
+        house_avg: float,
+        wrapped: _WrappedReading,
+        bounds: tuple[float, float, float, float],
+        humidity: float | None,
+        *,
+        available: bool,
     ) -> tuple[Action, float]:
         """Run ``decide()`` and advance the *learning* state (offset, target). Returns the action and
         the tick timestamp.
@@ -552,21 +581,26 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         the failsafe: freeze + a would-notify message, no learning — so ``house_avg`` is unused and
         the caller passes the retained target as a placeholder.
         """
+        band_low, band_high, temp_min, temp_max = bounds
         # Seed the target to the current operating point so the within-deadband learning branch runs
         # from the first tick (enabling control re-seeds the target the same way).
         if available and self._target is None:
             self._target = house_avg
             self._last_target = house_avg
+        # Non-None by construction: available→seeded just above; the failsafe path is only reached
+        # via _evaluate with self._target already set (it gates on `self._target is not None`).
+        target = self._target
+        assert target is not None
 
-        config = replace(self._config, temp_min=wrapped.temp_min, temp_max=wrapped.temp_max)
+        config = replace(self._config, temp_min=temp_min, temp_max=temp_max)
         now_ts = dt_util.utcnow().timestamp()
         action = decide(
             ControllerInputs(
                 available=available,
                 house_average=house_avg,
-                target=self._target,
-                band_low=wrapped.band_low,
-                band_high=wrapped.band_high,
+                target=target,
+                band_low=band_low,
+                band_high=band_high,
                 now_ts=now_ts,
                 last_change_ts=self._last_change_ts,
                 learned_offset=self._learned_offset,

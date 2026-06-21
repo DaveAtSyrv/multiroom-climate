@@ -1,2 +1,5 @@
 pytest>=8.0
 pytest-homeassistant-custom-component
+# Pinned to the 2.1 patch line: strict mypy can surface new errors across minor bumps, so hold it
+# steady so local == CI (the strict-typing quality rule). Pulls homeassistant's types in via PHACC.
+mypy~=2.1.0
