@@ -53,9 +53,7 @@ rules:
   docs-installation-parameters: done  # README "Setup" lists thermostat / sensors / humidity.
   entity-unavailable: done  # climate.available follows thermostat presence.
   integration-owner: done  # manifest codeowners.
-  log-when-unavailable:
-    status: todo
-    comment: Log once when the thermostat/sensors drop and once when they return (no spam).
+  log-when-unavailable: done  # coordinator logs one WARNING when the thermostat / all sensors drop, one INFO on return.
   parallel-updates: done  # PARALLEL_UPDATES = 0 on both platforms.
   reauthentication-flow:
     status: exempt

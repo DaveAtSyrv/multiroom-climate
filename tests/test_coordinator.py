@@ -7,6 +7,7 @@ non-numeric / unknown HVAC mode" behaviour is covered end to end.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from unittest.mock import patch
 
@@ -887,3 +888,90 @@ async def test_failed_fan_write_is_swallowed(hass: HomeAssistant) -> None:
     assert calls[0].data["fan_mode"] == "on"
     # ...and the raised error was swallowed, so the tick still completed.
     assert data.fan_blocked is None
+
+
+# --- Once-only "data source unavailable" logging (log_when_unavailable) ---
+
+_COORD_LOGGER = "custom_components.multiroom_climate.coordinator"
+
+
+def _logs(caplog: pytest.LogCaptureFixture, level: str, needle: str) -> list[str]:
+    """Messages at ``level`` whose text contains ``needle`` — used to assert once-only logging."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == level and needle in r.getMessage()
+    ]
+
+
+async def test_thermostat_drop_logs_one_warning_then_recovers_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    with caplog.at_level(logging.INFO, logger=_COORD_LOGGER):
+        await coordinator._async_update_data()  # present → silent
+        hass.states.async_set("climate.daikin", "unavailable")
+        await coordinator._async_update_data()  # drops → one WARNING
+        await coordinator._async_update_data()  # still gone → no second WARNING
+        hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+        await coordinator._async_update_data()  # returns → one INFO
+
+    assert len(_logs(caplog, "WARNING", "thermostat climate.daikin is unavailable")) == 1
+    assert len(_logs(caplog, "INFO", "thermostat climate.daikin is available again")) == 1
+
+
+async def test_thermostat_startup_appearance_is_silent(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The wrapped thermostat loads *after* our first poll (startup ordering): absent → present must
+    # not log a spurious "unavailable" or "available again".
+    hass.states.async_set("sensor.a", "70.0")
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    with caplog.at_level(logging.INFO, logger=_COORD_LOGGER):
+        await coordinator._async_update_data()  # thermostat absent → silent (never seen present)
+        hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+        await coordinator._async_update_data()  # first appearance → silent
+
+    assert _logs(caplog, "WARNING", "thermostat climate.daikin") == []
+    assert _logs(caplog, "INFO", "thermostat climate.daikin") == []
+
+
+async def test_all_sensors_drop_logs_one_warning_then_recovers_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Thermostat present throughout so only the sensor branch logs.
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    hass.states.async_set("sensor.a", "70.0")
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    with caplog.at_level(logging.INFO, logger=_COORD_LOGGER):
+        await coordinator._async_update_data()  # fresh → silent
+        hass.states.async_set("sensor.a", "unavailable")
+        await coordinator._async_update_data()  # all stale → one WARNING
+        await coordinator._async_update_data()  # still stale → no second WARNING
+        hass.states.async_set("sensor.a", "70.0")
+        await coordinator._async_update_data()  # back → one INFO
+
+    assert len(_logs(caplog, "WARNING", "target temperature sensors")) == 1
+    assert len(_logs(caplog, "INFO", "target temperature sensor is available again")) == 1
+
+
+async def test_partial_sensor_loss_does_not_log(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Losing *some* (not all) sensors is normal degradation surfaced via fresh/total, not an outage.
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set("sensor.b", "71.0")
+    coordinator = _make_coordinator(hass, ["sensor.a", "sensor.b"])
+
+    with caplog.at_level(logging.INFO, logger=_COORD_LOGGER):
+        await coordinator._async_update_data()
+        hass.states.async_set("sensor.b", "unavailable")  # one of two drops
+        await coordinator._async_update_data()
+
+    assert _logs(caplog, "WARNING", "target temperature sensors") == []
