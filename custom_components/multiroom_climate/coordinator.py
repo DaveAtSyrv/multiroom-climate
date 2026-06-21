@@ -117,8 +117,9 @@ _SAVE_DELAY_S = 600.0
 # loaded) is a config problem the user must fix — surfaced as a repair issue. It must outlast a slow
 # startup or reload (the source integration loading after our first poll), so it's raised only after
 # this many consecutive absent polls (at the 60s interval, ~5 min of continuous absence). A
-# thermostat that stays *registered but unavailable* is transient and owned by log_when_unavailable;
-# only a truly-missing entity escalates here.
+# thermostat that stays *registered but unavailable* (state present, value "unavailable") is left to
+# the once-only availability logging (_log_availability), not escalated here — only an entity that's
+# missing from the state machine is an unambiguous config error.
 _THERMOSTAT_MISSING_ISSUE = "thermostat_missing"
 _THERMOSTAT_MISSING_TICKS = 5
 
@@ -205,6 +206,10 @@ class _WrappedReading:
     target_temp_step: float | None
     fan_mode: str | None
     fan_modes: tuple[str, ...]
+    # Whether the entity is in the state machine at all. False *only* when it's missing entirely
+    # (removed/renamed/never-loaded); a present-but-unavailable entity is still exists=True with
+    # hvac_mode=None. Distinct from ``present`` and consumed by the missing-thermostat repair.
+    exists: bool = True
 
     @property
     def present(self) -> bool:
@@ -227,7 +232,8 @@ class _WrappedReading:
         return self.fan_mode == FAN_ON
 
 
-# The "thermostat missing/unavailable" reading — shareable because the dataclass is frozen.
+# The "thermostat missing" reading (entity absent from the state machine) — shareable because the
+# dataclass is frozen. ``exists=False`` distinguishes it from a present-but-unavailable thermostat.
 _NO_READING = _WrappedReading(
     hvac_mode=None,
     hvac_modes=(),
@@ -238,6 +244,7 @@ _NO_READING = _WrappedReading(
     target_temp_step=None,
     fan_mode=None,
     fan_modes=(),
+    exists=False,
 )
 
 
@@ -262,10 +269,11 @@ def _log_availability(
 
     ``state`` is seeded absent-but-unlogged, and the recovery log is gated on having logged the
     drop — so a source that only *appears* (loads after our first poll) is silent, and a genuine
-    present→absent→present cycle logs one WARNING then one INFO. A source that's configured but
-    never once present is a persistent config problem (a repair issue), not a transient drop, so
-    it is intentionally not reported here. Pre-formatted messages keep the call sites readable;
-    these events are rare, so eager formatting costs nothing.
+    present→absent→present cycle logs one WARNING then one INFO. A wrapped thermostat that's missing
+    from the state machine entirely (never loads / removed) is a persistent config problem, not a
+    transient drop — escalated to a repair issue by ``_reconcile_thermostat_repair`` rather than
+    reported here. Pre-formatted messages keep the call sites readable; these events are rare, so
+    eager formatting costs nothing.
     """
     if available and not state.present:
         if state.drop_logged:
@@ -628,17 +636,19 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             _LOGGER.warning("Failed to set %s fan mode: %s", self._wrapped, err)
 
     @callback
-    def _reconcile_thermostat_repair(self) -> None:
+    def _reconcile_thermostat_repair(self, wrapped: _WrappedReading) -> None:
         """Raise/clear a repair issue when the wrapped thermostat is *absent* (removed/renamed).
 
-        Scoped to a truly-missing entity (``states.get`` is ``None``), not a registered-but-
-        unavailable one — a brief or long outage of an existing entity is transient and owned by
-        ``log_when_unavailable``. The issue is raised only after ``_THERMOSTAT_MISSING_TICKS``
-        consecutive absent polls so a slow startup/reload can't false-positive, and is cleared
-        (idempotently) the moment the entity reappears — which also self-heals a stale issue left
-        over from a previous session.
+        Scoped to an entity that's missing from the state machine entirely (``wrapped.exists`` is
+        False), not a registered-but-unavailable one: a present-but-unavailable thermostat — even a
+        permanently dead one — is left to the once-only availability logging (``_log_availability``),
+        which is the deliberate, accepted boundary (only a *missing* entity is an unambiguous config
+        error). Reads the existence off the reading ``_read_wrapped`` already took this tick rather
+        than re-querying. The issue is raised only after ``_THERMOSTAT_MISSING_TICKS`` consecutive
+        absent polls so a slow startup/reload can't false-positive, and is cleared (idempotently) the
+        moment the entity reappears — which also self-heals a stale issue from a previous session.
         """
-        if self.hass.states.get(self._wrapped) is not None:
+        if wrapped.exists:
             self._thermostat_missing_ticks = 0
             ir.async_delete_issue(self.hass, DOMAIN, self._missing_issue_id)
             return
@@ -678,7 +688,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             on_back="A target temperature sensor is available again; resuming regulation",
         )
         # Escalate a sustained *missing* (removed/renamed) thermostat to a user-actionable repair.
-        self._reconcile_thermostat_repair()
+        self._reconcile_thermostat_repair(wrapped)
         # Day/night schedule re-asserts the target at transitions (before decide() runs this tick).
         scheduled = self._apply_schedule()
         proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
