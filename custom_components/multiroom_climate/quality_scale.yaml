@@ -74,9 +74,7 @@ rules:
   docs-known-limitations: done  # README "Known limitations" — equal-weight avg, one schedule, symmetric lead, bounded humidity, fan provenance, failsafe-no-notify.
   docs-supported-devices: done  # README "Supported devices" — heat/cool-band requirement, tested Daikin Skyport, single-setpoint unsupported.
   docs-supported-functions: done  # README "What it does".
-  docs-troubleshooting:
-    status: todo
-    comment: Add a troubleshooting section.
+  docs-troubleshooting: done  # README "Troubleshooting" — shadow_* diagnostics, switch-off, no_thermostat_band, waiting_for_first_reading, unavailable, wrong-temp, schedule, fan-blocked.
   docs-use-cases: done  # README "Use cases" — uneven house, automate the offset hack, night setback, humid comfort, destratify.
   dynamic-devices:
     status: exempt
