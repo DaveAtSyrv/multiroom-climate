@@ -90,8 +90,14 @@ rules:
     status: exempt
     comment: A single wrapped entity; no dynamic device set.
   entity-category:
-    status: todo
-    comment: Decide whether the master-enable switch should be EntityCategory.CONFIG (vs primary control) and document it.
+    status: done
+    comment: >-
+      Assessed: no EntityCategory is correct. HA's guidance says don't categorize an entity that's a
+      primary feature of the device. The master-enable switch is the on/off for the integration's one
+      job (a two-entity integration: the climate entity + this switch) — a primary control, not a
+      tuning/diagnostic entity — so it stays uncategorized (the code already sets no category). If a
+      later version adds tuning toggles (e.g. v2 per-room weights / gains), *those* become CONFIG and
+      this switch remains primary above them.
   entity-device-class:
     status: exempt
     comment: Climate has no device-class concept; the switch's default class is appropriate.
