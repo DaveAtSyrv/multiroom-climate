@@ -78,6 +78,22 @@ a manual hold until then.
 - Diagnostic `shadow_*` attributes on the climate entity expose what the controller is doing (target,
   learned offset, sensor freshness, proposed band, scheduled setpoint) — handy while tuning.
 
+## How it updates
+
+Multiroom Climate is a **local-polling** integration — no cloud, no push. A single coordinator polls
+every **60 seconds** and, on each tick:
+
+1. Reads your selected room sensors (skipping any that are unavailable) and computes the house average.
+2. Reads the wrapped thermostat — its mode, AUTO band, and temperature bounds.
+3. Runs the control logic (offset learning, feedforward/trim, changeover, fan-circulate, day/night
+   schedule).
+4. **If the master switch is on**, writes the resulting band to the thermostat; **if off**, computes
+   the same decision but only records it (`shadow_*`) without touching the thermostat.
+
+Everything runs locally against entities already in Home Assistant, so there's no external API to
+rate-limit. Setting the target on the climate entity triggers an immediate refresh rather than
+waiting for the next poll.
+
 ## Removing the integration
 
 1. **Settings → Devices & Services → Multiroom Climate**, open the **⋮** menu on the entry and choose
