@@ -47,9 +47,7 @@ rules:
     status: exempt
     comment: No service actions.
   config-entry-unloading: done  # async_unload_entry.
-  docs-configuration-parameters:
-    status: todo
-    comment: Confirm the README documents every options-flow (schedule) parameter.
+  docs-configuration-parameters: done  # README "Day/night schedule (options)" documents all 6 options-flow params (enable, day/night temp, day/night start, optimal-start lead).
   docs-installation-parameters: done  # README "Setup" lists thermostat / sensors / humidity.
   entity-unavailable: done  # climate.available follows thermostat presence.
   integration-owner: done  # manifest codeowners.
