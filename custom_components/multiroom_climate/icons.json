@@ -1,0 +1,9 @@
+{
+  "entity": {
+    "switch": {
+      "control": {
+        "default": "mdi:thermostat-auto"
+      }
+    }
+  }
+}

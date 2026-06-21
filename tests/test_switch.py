@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from homeassistant.const import STATE_OFF, STATE_ON, Platform
 from homeassistant.core import HomeAssistant, State
+from homeassistant.helpers import icon as icon_helper
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     mock_restore_cache,
@@ -87,3 +91,23 @@ async def test_switch_restores_enabled_state(
 def test_parallel_updates_zero_for_coordinator_platform() -> None:
     # Toggling only flips an in-memory flag; the coordinator owns all I/O. Pin the quality-bar value.
     assert switch_platform.PARALLEL_UPDATES == 0
+
+
+async def test_switch_icon_served_from_icon_translations(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    # icon_translations: HA resolves the switch's icon from icons.json (keyed by its translation_key
+    # "control"), not a hard-coded _attr_icon. Drive the real icon loader to prove it's wired up.
+    _seed_states(hass)
+    await _setup(hass)
+
+    icons = await icon_helper.async_get_icons(hass, "entity", integrations=[DOMAIN])
+
+    assert icons[DOMAIN]["switch"]["control"]["default"] == "mdi:thermostat-auto"
+
+
+def test_icons_json_keyed_by_switch_translation_key() -> None:
+    # The icons.json structure must nest under entity → switch → <translation_key> for HA to load it.
+    icons_path = Path(switch_platform.__file__).parent / "icons.json"
+    icons = json.loads(icons_path.read_text())
+    assert icons["entity"]["switch"]["control"]["default"] == "mdi:thermostat-auto"
