@@ -223,6 +223,20 @@ _NO_READING = _WrappedReading(
 )
 
 
+@dataclass
+class _Availability:
+    """Once-only availability bookkeeping for one data source (the thermostat, or the sensor set).
+
+    ``present`` is the source's last-seen state; ``drop_logged`` records whether its current outage
+    has already produced a WARNING. Seeded *absent and unlogged* so a source that merely *appears*
+    (startup ordering — the wrapped entity loads after our first poll) is silent: only a genuine
+    present→absent transition logs. See ``_log_availability``.
+    """
+
+    present: bool = False
+    drop_logged: bool = False
+
+
 @dataclass(frozen=True)
 class CoordinatorData:
     """The regulated view computed each tick: the house average + the wrapped thermostat's state.
@@ -301,6 +315,13 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         # Master enable (the kill switch). Default off: a fresh install is inert until the user opts
         # in, so it never drives the thermostat unexpectedly. Owned here; the switch entity sets it.
         self.enabled: bool = False
+
+        # Once-only "data source unavailable" logging (log_when_unavailable): one WARNING when the
+        # thermostat — or every target sensor — drops, one INFO when it returns, instead of spamming
+        # the log every 60s poll. Both seeded absent/unlogged so a startup-ordering appearance is
+        # silent (see _Availability / _log_availability).
+        self._thermostat_avail = _Availability()
+        self._sensors_avail = _Availability()
 
     async def async_load_state(self) -> None:
         """Restore persisted control state before the first refresh.
@@ -560,6 +581,29 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         except Exception as err:  # noqa: BLE001 - a failed write must not break the update
             _LOGGER.warning("Failed to set %s fan mode: %s", self._wrapped, err)
 
+    @staticmethod
+    def _log_availability(
+        state: _Availability, *, available: bool, on_lost: str, on_back: str
+    ) -> None:
+        """Log a data source dropping (WARNING) and returning (INFO) exactly once each.
+
+        ``state`` is seeded absent-but-unlogged, and the recovery log is gated on having logged the
+        drop — so a source that only *appears* (loads after our first poll) is silent, and a genuine
+        present→absent→present cycle logs one WARNING then one INFO. A source that's configured but
+        never once present is a persistent config problem (a repair issue), not a transient drop, so
+        it is intentionally not reported here. Pre-formatted messages keep the call sites readable;
+        these events are rare, so eager formatting costs nothing.
+        """
+        if available and not state.present:
+            if state.drop_logged:
+                _LOGGER.info(on_back)
+                state.drop_logged = False
+            state.present = True
+        elif not available and state.present:
+            _LOGGER.warning(on_lost)
+            state.drop_logged = True
+            state.present = False
+
     async def _async_update_data(self) -> CoordinatorData:
         before = self._persisted_state()
         temps = self._read_sensors()
@@ -568,6 +612,21 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         room_spread = spread(temps)
         humidity = self._read_humidity()
         wrapped = self._read_wrapped()
+        # Once-only logging when a data source drops/returns (no per-poll spam). Observe-and-log only;
+        # the regulation below is unchanged — a missing thermostat already yields no band, and zero
+        # fresh sensors already trips the decide() failsafe.
+        self._log_availability(
+            self._thermostat_avail,
+            available=wrapped.present,
+            on_lost=f"Wrapped thermostat {self._wrapped} is unavailable; multiroom control is paused until it returns",
+            on_back=f"Wrapped thermostat {self._wrapped} is available again; resuming control",
+        )
+        self._log_availability(
+            self._sensors_avail,
+            available=fresh > 0,
+            on_lost=f"All target temperature sensors ({', '.join(self._sensors)}) are unavailable; holding the thermostat band until one returns",
+            on_back="A target temperature sensor is available again; resuming regulation",
+        )
         # Day/night schedule re-asserts the target at transitions (before decide() runs this tick).
         scheduled = self._apply_schedule()
         proposed, status, now_ts = self._evaluate(house_avg, wrapped, humidity)
