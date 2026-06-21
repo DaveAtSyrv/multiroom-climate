@@ -68,9 +68,7 @@ rules:
     status: exempt
     comment: No discovery transport.
   docs-data-update: done  # README "How it updates" — local polling, 60s coordinator tick, write-when-enabled.
-  docs-examples:
-    status: todo
-    comment: Add automation/usage examples to the docs.
+  docs-examples: done  # README "Examples" — presence on/off automation, failsafe-notify automation, set-target script.
   docs-known-limitations: done  # README "Known limitations" — equal-weight avg, one schedule, symmetric lead, bounded humidity, fan provenance, failsafe-no-notify.
   docs-supported-devices: done  # README "Supported devices" — heat/cool-band requirement, tested Daikin Skyport, single-setpoint unsupported.
   docs-supported-functions: done  # README "What it does".
