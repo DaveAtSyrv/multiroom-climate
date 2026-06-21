@@ -67,9 +67,7 @@ rules:
   discovery-update-info:
     status: exempt
     comment: No discovery transport.
-  docs-data-update:
-    status: todo
-    comment: Document how data is fetched (60s coordinator poll of sensors + wrapped thermostat).
+  docs-data-update: done  # README "How it updates" — local polling, 60s coordinator tick, write-when-enabled.
   docs-examples:
     status: todo
     comment: Add automation/usage examples to the docs.
