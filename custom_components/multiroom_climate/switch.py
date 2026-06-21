@@ -38,8 +38,9 @@ async def async_setup_entry(
 class MultiroomEnableSwitch(RestoreEntity, SwitchEntity):
     """Turns the coordinator's actuation on/off and restores its last state across restarts."""
 
-    _attr_icon = "mdi:thermostat-auto"
     _attr_has_entity_name = True
+    # Icon comes from icons.json (keyed by this translation_key), not a hard-coded _attr_icon —
+    # the icon_translations quality rule. The "control" key maps to mdi:thermostat-auto there.
     _attr_translation_key = "control"
 
     def __init__(

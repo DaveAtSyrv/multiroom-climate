@@ -102,9 +102,7 @@ rules:
   exception-translations:
     status: todo
     comment: Confirm any user-facing exceptions use translation keys (most write failures are logged/swallowed).
-  icon-translations:
-    status: todo
-    comment: switch.py hard-codes _attr_icon = "mdi:thermostat-auto"; move it to icons.json.
+  icon-translations: done  # switch icon moved from _attr_icon to icons.json (entity.switch.control.default).
   reconfiguration-flow: done  # async_step_reconfigure.
   repair-issues:
     status: todo
