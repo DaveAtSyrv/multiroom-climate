@@ -2,6 +2,10 @@
 
 **Multi-room comfort for Daikin Skyport — in Home Assistant.**
 
+[![Validate](https://github.com/DaveAtSyrv/multiroom-climate/actions/workflows/validate.yml/badge.svg)](https://github.com/DaveAtSyrv/multiroom-climate/actions/workflows/validate.yml)
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A custom Home Assistant integration that adds a smart thermostat which regulates your home to an
 **average of the rooms you choose** instead of the single (often warm) thermostat sensor.
 It automatically learns the bias between the thermostat's own sensor and your house average — so the
@@ -39,9 +43,36 @@ manual "set it to 67 to hold the house at 70" trick becomes automatic and self-a
 - **Rooms that drift apart.** When one room runs much warmer or cooler than the rest, the fan
   circulates to even things out, then backs off once they re-converge.
 
+## Requirements & supported devices
+
+**Before installing**, you'll need the following already in Home Assistant:
+
+- A **`climate.*` thermostat entity** to wrap (see the compatibility notes below).
+- **One or more temperature sensors** for the rooms you want to average.
+- A humidity sensor is optional (it enables the cooling-season overcool).
+
+Multiroom Climate doesn't talk to any thermostat directly; it wraps the existing `climate.*` entity. A
+thermostat works as long as that entity exposes a **heat/cool (AUTO) band** (separate low/high
+setpoints, `target_temp_low` / `target_temp_high`, plus min/max bounds), because the controller
+regulates by sliding that band.
+
+- **Tested with:** Daikin Skyport thermostats, via the community
+  [apetrycki/daikinskyport](https://github.com/apetrycki/daikinskyport) integration.
+- **Should work with:** any `climate.*` entity that supports a heat/cool band (most multi-stage and
+  heat-pump thermostats, in their AUTO mode).
+- **Not supported:** single-setpoint thermostats (heat-only or cool-only — one target temperature, no
+  AUTO band); there's nothing for the controller to slide.
+
+A self-contained direct-API path (no wrapped entity required) is planned for v2.
+
 ## Installation
 
 ### HACS (custom repository)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=DaveAtSyrv&repository=multiroom-climate&category=integration)
+
+Click the button to open HACS with this repository pre-filled, choose **Download**, then restart Home
+Assistant. To add it by hand instead:
 
 1. In HACS, open the **⋮** menu → **Custom repositories**.
 2. Add `https://github.com/DaveAtSyrv/multiroom-climate` with category **Integration**.
@@ -54,13 +85,16 @@ directory and restart.
 
 ## Setup
 
-1. **Settings → Devices & Services → Add Integration → Multiroom Climate.**
-2. Choose:
-   - **Thermostat to control** — the `climate.*` entity to drive (kept in its AUTO band).
-   - **Target temperature sensors** — the room sensors whose average is the temperature to
-     hold (pick one or more).
-   - **Humidity sensor** *(optional)* — enables a slight cooling-season overcool while humidity is
-     above target.
+[![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=multiroom_climate)
+
+After installing and restarting, click the button above (or go to **Settings → Devices & Services →
+Add Integration → Multiroom Climate**) and choose:
+
+- **Thermostat to control** — the `climate.*` entity to drive (kept in its AUTO band).
+- **Target temperature sensors** — the room sensors whose average is the temperature to
+  hold (pick one or more).
+- **Humidity sensor** *(optional)* — enables a slight cooling-season overcool while humidity is
+  above target.
 
 This creates two entities: a **climate** entity (named after the integration) that shows the house
 average with a single settable target, and a **master enable switch** (`<name> control`) that is
@@ -168,56 +202,6 @@ Everything runs locally against entities already in Home Assistant, so there's n
 rate-limit. Setting the target on the climate entity triggers an immediate refresh rather than
 waiting for the next poll.
 
-## Removing the integration
-
-1. **Settings → Devices & Services → Multiroom Climate**, open the **⋮** menu on the entry and choose
-   **Delete**. Repeat for each entry if you set up more than one thermostat.
-2. *(If installed via HACS)* In **HACS**, open **Multiroom Climate → ⋮ → Remove**, then restart Home
-   Assistant.
-
-Deleting an entry removes its climate and switch entities and the device, and **deletes the
-integration's stored control state** (the learned sensor-bias offset and the held target). The wrapped
-thermostat itself is left untouched and returns to manual control — its current AUTO band is kept as-is
-(already bias-compensated for current conditions), so there's no jump on handback.
-
-## Status
-
-Early development. See [SPEC.md](SPEC.md) for the full design and roadmap.
-
-## Supported devices
-
-Multiroom Climate doesn't talk to any thermostat directly; it wraps an existing Home Assistant
-`climate.*` entity. A thermostat works as long as that entity exposes a **heat/cool (AUTO) band**
-(separate low/high setpoints, `target_temp_low` / `target_temp_high`, plus min/max bounds), because
-the controller regulates by sliding that band.
-
-- **Tested with:** Daikin Skyport thermostats, via the community
-  [apetrycki/daikinskyport](https://github.com/apetrycki/daikinskyport) integration.
-- **Should work with:** any `climate.*` entity that supports a heat/cool band (most multi-stage and
-  heat-pump thermostats, in their AUTO mode).
-- **Not supported:** single-setpoint thermostats (heat-only or cool-only — one target temperature, no
-  AUTO band); there's nothing for the controller to slide.
-
-A self-contained direct-API path (no wrapped entity required) is planned for v2.
-
-## Known limitations
-
-v1 keeps the control model deliberately simple. Current limitations (most lifted in later versions):
-
-- **Rooms are weighted equally.** The target is a plain average of the chosen sensors; per-room
-  weighting is a v2 feature.
-- **One house-wide schedule.** The day/night setback uses a single pair of setpoints for the whole
-  house — no per-room target switching.
-- **Fixed, symmetric optimal-start lead.** One lead time pulls *both* the day and night transitions
-  earlier by the same amount; it isn't learned or occupancy-aware.
-- **Humidity is a bounded overcool only.** In cooling season it overcools by a capped amount when
-  humidity is high — not true dehumidify-demand control (that needs the v2 direct API).
-- **Fan-circulate can't tell whose "on" it is.** If you set the thermostat fan to continuous yourself,
-  it's returned to auto once the rooms re-converge — the integration doesn't distinguish a manual `on`
-  from its own.
-- **The stale-sensor failsafe doesn't notify yet.** If every sensor goes stale it freezes the setpoint
-  and surfaces a `shadow_notify` message, but doesn't actually send a notification.
-
 ## Troubleshooting
 
 The climate entity exposes `shadow_*` diagnostic attributes that explain what the controller is doing
@@ -241,6 +225,40 @@ each tick — start there. `shadow_status` is the one-word reason for the curren
   day↔night transition — that's expected.
 - **The fan won't switch (`shadow_fan_blocked`).** Fan-circulate only manages the on/auto pair; a
   manual fan speed, or a mode the thermostat doesn't advertise, is left untouched.
+
+## Known limitations
+
+v1 keeps the control model deliberately simple. Current limitations (most lifted in later versions):
+
+- **Rooms are weighted equally.** The target is a plain average of the chosen sensors; per-room
+  weighting is a v2 feature.
+- **One house-wide schedule.** The day/night setback uses a single pair of setpoints for the whole
+  house — no per-room target switching.
+- **Fixed, symmetric optimal-start lead.** One lead time pulls *both* the day and night transitions
+  earlier by the same amount; it isn't learned or occupancy-aware.
+- **Humidity is a bounded overcool only.** In cooling season it overcools by a capped amount when
+  humidity is high — not true dehumidify-demand control (that needs the v2 direct API).
+- **Fan-circulate can't tell whose "on" it is.** If you set the thermostat fan to continuous yourself,
+  it's returned to auto once the rooms re-converge — the integration doesn't distinguish a manual `on`
+  from its own.
+- **The stale-sensor failsafe doesn't notify yet.** If every sensor goes stale it freezes the setpoint
+  and surfaces a `shadow_notify` message, but doesn't actually send a notification.
+
+## Removing the integration
+
+1. **Settings → Devices & Services → Multiroom Climate**, open the **⋮** menu on the entry and choose
+   **Delete**. Repeat for each entry if you set up more than one thermostat.
+2. *(If installed via HACS)* In **HACS**, open **Multiroom Climate → ⋮ → Remove**, then restart Home
+   Assistant.
+
+Deleting an entry removes its climate and switch entities and the device, and **deletes the
+integration's stored control state** (the learned sensor-bias offset and the held target). The wrapped
+thermostat itself is left untouched and returns to manual control — its current AUTO band is kept as-is
+(already bias-compensated for current conditions), so there's no jump on handback.
+
+## Status
+
+Early development. See [SPEC.md](SPEC.md) for the full design and roadmap.
 
 ## License
 
