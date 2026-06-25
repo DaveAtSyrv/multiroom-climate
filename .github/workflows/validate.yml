@@ -6,6 +6,7 @@ on:
   pull_request:
   schedule:
     - cron: "0 0 * * *"
+  workflow_dispatch:  # allow re-running validation on demand (e.g. after the repo goes public)
 
 jobs:
   tests:
