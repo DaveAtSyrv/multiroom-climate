@@ -11,6 +11,10 @@ A custom Home Assistant integration that adds a smart thermostat which regulates
 It automatically learns the bias between the thermostat's own sensor and your house average — so the
 manual "set it to 67 to hold the house at 70" trick becomes automatic and self-adjusting.
 
+I built this for my own house, where the Daikin Skyport sits in the warmest room and the rest of the
+place always ran a couple degrees off. It's a personal project I'm sharing in case you have the same
+problem — independent and community-built, not a product.
+
 > **Not affiliated with, endorsed by, or sponsored by Daikin.** "Daikin" and "Skyport" are
 > trademarks of their respective owners and are used here only to describe compatibility
 > (nominative use). This is an independent, community-built integration.
@@ -33,7 +37,7 @@ manual "set it to 67 to hold the house at 70" trick becomes automatic and self-a
 
 - **A house that heats or cools unevenly.** When the thermostat sits in the warmest (or coolest) spot,
   the rest of the house runs off-target. Hold the average of the rooms you actually use instead.
-- **Automating the "set it to 67 to get 70" workaround.** If you already nudge the thermostat to
+- **Automating the "set it to 67 to hold 70" workaround.** If you already nudge the thermostat to
   compensate for its own sensor, this learns that bias and applies it for you, and keeps adjusting as
   conditions change.
 - **Night setback without a smart-thermostat schedule.** Set a lower night temperature and a morning
@@ -48,7 +52,8 @@ manual "set it to 67 to hold the house at 70" trick becomes automatic and self-a
 **Before installing**, you'll need the following already in Home Assistant:
 
 - A **`climate.*` thermostat entity** to wrap (see the compatibility notes below).
-- **One or more temperature sensors** for the rooms you want to average.
+- **One or more remote temperature sensors** for the rooms you want to average (any `sensor.*`
+  temperature entities — the room/remote sensors the thermostat itself can't see).
 - A humidity sensor is optional (it enables the cooling-season overcool).
 
 Multiroom Climate doesn't talk to any thermostat directly; it wraps the existing `climate.*` entity. A
@@ -213,7 +218,7 @@ This is surfaced as `shadow_status: windup_blocked` / `within_deadband_saturated
 
 This guard needs the wrapped thermostat to publish its **own** temperature — visible as
 `shadow_thermostat_temperature`. If that attribute is `None`, the thermostat doesn't expose its
-sensor and the guard is **inert** (the integration falls back to its prior behaviour). The
+sensor and the guard is **inert** (the integration falls back to its prior behavior). The
 saturation threshold is the `saturation_margin` tunable (default `2.0`, in your system's unit) — how
 far outside the band the thermostat's sensor must sit to count as flat-out; it was tuned for °F, so
 a °C setup or an undersized system may want it lower.
@@ -280,7 +285,10 @@ thermostat itself is left untouched and returns to manual control — its curren
 
 ## Status
 
-Early development. See [SPEC.md](SPEC.md) for the full design and roadmap.
+A personal project, shared as-is. It's pre-1.0 and the control model is deliberately simple (see
+[Known limitations](#known-limitations)) — actively developed, and not yet tested across a wide range
+of setups. Issues and notes from your own install are welcome. See [SPEC.md](SPEC.md) for the full
+design and roadmap.
 
 ## License
 
