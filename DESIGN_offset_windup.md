@@ -90,13 +90,16 @@ the correct, deadlock-free fix and the extra plumbing is modest.
 
 ## 5. Build plan (once approach is chosen)
 
-1. **Failing regression test first** — encode the exact live scenario: target 70→64 setback, a house
-   that lags (AC saturated), `min_period_s` ticks over hours; assert `K` stays sane (≈ −3 to −4) and
-   the band never winds > a bound below steady state. This is also how we'll know the fix works.
+1. **Failing regression test first** — DONE (`tests/test_windup_regression.py`): drives `decide()`
+   through the 70→64 setback with a lagging house, asserts `K` stays sane; `xfail(strict=True)` until
+   the fix flips it. Reproduces the live −3.66 → ~−12 corruption.
 2. Implement the chosen anti-windup + learning gate (small CLs, velocity-form preserved — do NOT
    convert to proportional-position; the accumulation absorbs sensor bias, see controller.py docstring).
-3. Add a **"Reset learned offset" button/service entity** so future corruption (or any bad state) is
-   recoverable from the UI without delete+re-add. (Approach-independent — can land first.)
+   **← NEXT (Option A): add thermostat own-temp / `hvac_action` to `ControllerInputs` + coordinator
+   wiring; gate band-winding + K-learning on equipment-not-saturated.**
+3. Reset/override the learned offset — DONE, shipped separately as **PR #50** (branch
+   `feat/learned-offset-override`): a config-category, disabled-by-default Number entity exposing `K`
+   (set 0 to relearn, or seed a known-good value); recoverable from the UI without delete+re-add.
 4. Keep 100% statement+branch coverage and hassfest green. `/simplify` the PR. Advisor before
    committing to the control-law change and before declaring done.
 5. After merge: note the release → HACS re-download → restart steps; user can then re-enable the
