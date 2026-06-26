@@ -4,6 +4,11 @@
       "control": {
         "default": "mdi:thermostat-auto"
       }
+    },
+    "number": {
+      "learned_offset": {
+        "default": "mdi:thermometer-lines"
+      }
     }
   }
 }

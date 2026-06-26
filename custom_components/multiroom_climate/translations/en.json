@@ -18,7 +18,7 @@
       },
       "reconfigure": {
         "title": "Change sensors",
-        "description": "Update the averaged room sensors or the humidity sensor. The wrapped thermostat can't be changed here — add a new entry to control a different one. Learned calibration is kept.",
+        "description": "Update the averaged room sensors or the humidity sensor. The wrapped thermostat can't be changed here \u2014 add a new entry to control a different one. Learned calibration is kept.",
         "data": {
           "target_sensors": "[%key:component::multiroom_climate::config::step::user::data::target_sensors%]",
           "humidity_sensor": "[%key:component::multiroom_climate::config::step::user::data::humidity_sensor%]"
@@ -41,6 +41,11 @@
     "switch": {
       "control": {
         "name": "Control"
+      }
+    },
+    "number": {
+      "learned_offset": {
+        "name": "Learned offset"
       }
     }
   },
