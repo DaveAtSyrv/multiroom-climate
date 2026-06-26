@@ -133,6 +133,10 @@ class MultiroomClimateEntity(
         attrs: dict[str, float | int | str | None] = {
             "band_low": data.band_low,
             "band_high": data.band_high,
+            # The wrapped thermostat's OWN sensor. Also tells you the anti-windup/learning guard is
+            # armed: a number means it's active; None means the thermostat exposes no own temperature
+            # so the guard is inert (it falls back to pre-guard behaviour).
+            "shadow_thermostat_temperature": data.thermostat_temperature,
             "shadow_status": data.status,
             "shadow_sensors_fresh": data.fresh_sensors,
             "shadow_sensors_total": data.total_sensors,

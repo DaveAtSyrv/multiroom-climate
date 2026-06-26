@@ -25,6 +25,7 @@ import logging
 from typing import Any, TypedDict
 
 from homeassistant.components.climate import (
+    ATTR_CURRENT_TEMPERATURE,
     ATTR_FAN_MODE,
     ATTR_FAN_MODES,
     ATTR_MAX_TEMP,
@@ -220,6 +221,9 @@ class _WrappedReading:
     target_temp_step: float | None
     fan_mode: str | None
     fan_modes: tuple[str, ...]
+    # The thermostat's *own* sensor reading; feeds the anti-windup / offset-learning saturation gate
+    # (a sensor far outside the band = equipment flat-out). None when absent — guard degrades off.
+    current_temperature: float | None = None
     # Whether the entity is in the state machine at all. False *only* when it's missing entirely
     # (removed/renamed/never-loaded); a present-but-unavailable entity is still exists=True with
     # hvac_mode=None. Distinct from ``present`` and consumed by the missing-thermostat repair.
@@ -325,6 +329,7 @@ class CoordinatorData:
     hvac_modes: tuple[HVACMode, ...]
     band_low: float | None
     band_high: float | None
+    thermostat_temperature: float | None  # wrapped thermostat's OWN sensor; None = anti-windup guard inert
     temp_min: float | None  # wrapped thermostat's lower bound — bounds the house-target dial
     temp_max: float | None  # wrapped thermostat's upper bound — bounds the house-target dial
     target_temp_step: float | None  # wrapped thermostat's step (None = HA default) for the house-target dial
@@ -543,6 +548,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             hvac_modes=hvac_modes,
             band_low=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_LOW), float),
             band_high=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_HIGH), float),
+            current_temperature=convert(wrapped.attributes.get(ATTR_CURRENT_TEMPERATURE), float),
             temp_min=convert(wrapped.attributes.get(ATTR_MIN_TEMP), float),
             temp_max=convert(wrapped.attributes.get(ATTR_MAX_TEMP), float),
             target_temp_step=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_STEP), float),
@@ -629,6 +635,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 # failsafe path, so passing them when available=False is harmless.
                 humidity=humidity,
                 cooling=wrapped.is_cooling,
+                # The thermostat's own sensor — lets decide() detect equipment saturation and suppress
+                # integral windup / freeze offset learning while the band can't be tracked.
+                thermostat_temperature=wrapped.current_temperature,
             ),
             config,
         )
@@ -772,6 +781,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             hvac_modes=wrapped.hvac_modes,
             band_low=wrapped.band_low,
             band_high=wrapped.band_high,
+            thermostat_temperature=wrapped.current_temperature,
             temp_min=wrapped.temp_min,
             temp_max=wrapped.temp_max,
             target_temp_step=wrapped.target_temp_step,

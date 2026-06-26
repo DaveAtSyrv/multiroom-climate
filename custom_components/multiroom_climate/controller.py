@@ -72,6 +72,13 @@ class ControllerConfig:
     offset_alpha: float = 0.05
     """EMA rate for learning the band-to-house offset K (small = slow/robust)."""
 
+    saturation_margin: float = 2.0
+    """Degrees the wrapped thermostat's *own* sensor must sit beyond the band before the equipment
+    counts as saturated (running flat-out and not reaching setpoint). Used to suppress integral
+    windup and freeze offset learning while the plant can't track. Validated against live data: a
+    modulating system sat ~0.2 deg outside its band, a saturated setback pulldown ~10 deg outside —
+    so 2.0 separates them with wide slack both ways. Inactive when no own-sensor reading is supplied."""
+
     humidity_target: float = 50.0
     """Relative-humidity setpoint (%). Above this, cooling overcools to wring out moisture."""
 
@@ -147,6 +154,12 @@ class ControllerInputs:
     applies while cooling — gated on the mode, not the house temperature, so our own actuation can't
     flip the gate off and snap back."""
 
+    thermostat_temperature: float | None = None
+    """The wrapped thermostat's *own* sensor reading, or ``None`` if unavailable. Lets the controller
+    see when the equipment is saturated (its sensor sitting far outside the band = running flat-out
+    and not reaching setpoint). ``None`` disables the anti-windup / learning guards — a graceful
+    fallback for thermostats that don't expose their own temperature."""
+
 
 @dataclass(frozen=True)
 class Action:
@@ -198,6 +211,24 @@ def _overcool(inputs: ControllerInputs, config: ControllerConfig) -> float:
     return min(config.humidity_max_overcool, config.humidity_gain * excess)
 
 
+def _demand_saturation(inputs: ControllerInputs, config: ControllerConfig) -> int:
+    """Sign of equipment saturation: ``-1`` cooling-saturated, ``+1`` heating-saturated, ``0`` not.
+
+    The wrapped thermostat is saturated when its *own* sensor sits beyond the band by more than
+    ``saturation_margin`` — it's calling for full output and not reaching setpoint, so further band
+    motion in that direction actuates nothing and only winds the integrator. A ``None`` reading (no
+    own-sensor signal) reads as ``0``, preserving the pre-guard behaviour.
+    """
+    thermo = inputs.thermostat_temperature
+    if thermo is None:
+        return 0
+    if thermo > inputs.band_high + config.saturation_margin:
+        return -1  # above the cool setpoint and not reaching it — cooling flat-out
+    if thermo < inputs.band_low - config.saturation_margin:
+        return 1  # below the heat setpoint and not reaching it — heating flat-out
+    return 0
+
+
 def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     """Return the next :class:`Action` for one control tick (pure; see module docstring)."""
     # Failsafe: never drive HVAC off a missing or stale reading (and never learn from one).
@@ -225,7 +256,14 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
 
     if abs(error) <= config.deadband:
         # Settled at target — the ONLY place we learn. Nudge K toward (band_center - house_average)
-        # with a slow EMA. Gating on the deadband means the house is never sampled mid-recovery.
+        # with a slow EMA. Gating on the deadband means the house is never sampled mid-recovery; the
+        # extra saturation gate means we also never sample while the band is still wound away from
+        # steady state (a saturated plant), which would corrupt K (see DESIGN_offset_windup.md).
+        # Saturation in *either* direction means the in-deadband band isn't a true steady state, so
+        # this gate is non-directional (`!= 0`) — unlike the anti-windup trim gate below, which only
+        # blocks the *worsening* step. A distinct reason surfaces "holding but not learning".
+        if _demand_saturation(inputs, config) != 0:
+            return Action(set_band=False, reason="within_deadband_saturated")
         new_offset = inputs.learned_offset + config.offset_alpha * (
             (band_center - inputs.house_average) - inputs.learned_offset
         )
@@ -236,6 +274,12 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
 
     # Integral trim: ADD kp*error onto the current band (not an absolute setpoint — see module doc).
     desired_step = _clamp(config.kp * error, -config.max_step, config.max_step)
+    # Anti-windup: refuse to push the band further in a saturated demand direction. The equipment is
+    # already flat-out, so the step actuates nothing and only winds the band away from steady state
+    # (the root of the offset-corruption bug). A step that *relieves* saturation is always allowed.
+    saturation = _demand_saturation(inputs, config)
+    if (saturation < 0 and desired_step < 0) or (saturation > 0 and desired_step > 0):
+        return Action(set_band=False, reason="windup_blocked")
     return _shift_band(inputs, config, desired_step, "trim")
 
 

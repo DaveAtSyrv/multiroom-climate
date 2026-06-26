@@ -402,3 +402,80 @@ def test_schedule_lead_larger_than_window_resolves_via_modular_arithmetic():
     # night_start=(1320−600)%1440=720; at noon (720) the day arc [1200,720) wraps and excludes it.
     cfg = replace(_SCHED_CFG, optimal_start_lead_min=600.0)
     assert scheduled_target(_NOON, cfg) == 62.0
+
+
+# --- anti-windup + saturation-gated learning (CFG saturation_margin defaults to 2.0) -------------
+
+
+def test_cooling_saturated_blocks_downward_trim():
+    # Thermostat's own sensor well above the cool setpoint -> compressor flat out; a down-step
+    # actuates nothing, so it's blocked rather than winding the band below steady state.
+    a = decide(
+        _inputs(
+            house_average=24.0, target=21.0, band_low=20.0, band_high=23.0,
+            thermostat_temperature=26.0,  # 26 > 23 + 2 -> cooling-saturated
+        ),
+        CFG,
+    )
+    assert a.set_band is False and a.reason == "windup_blocked"
+
+
+def test_cooling_saturated_still_allows_relieving_upward_trim():
+    # Now too cold (wants the band UP) while the cool sensor reads high — that step relieves the
+    # saturation, so it must be allowed, not blocked.
+    a = decide(
+        _inputs(
+            house_average=18.0, target=21.0, band_low=20.0, band_high=23.0,
+            thermostat_temperature=26.0,
+        ),
+        CFG,
+    )
+    assert a.set_band is True and a.band_low > 20.0
+
+
+def test_heating_saturated_blocks_upward_trim():
+    a = decide(
+        _inputs(
+            house_average=18.0, target=21.0, band_low=20.0, band_high=23.0,
+            thermostat_temperature=17.0,  # 17 < 20 - 2 -> heating-saturated; too-cold wants band UP
+        ),
+        CFG,
+    )
+    assert a.set_band is False and a.reason == "windup_blocked"
+
+
+def test_no_thermostat_temp_falls_back_to_unguarded_trim():
+    # Graceful degradation: with no own-sensor reading, behave exactly as before (trim proceeds).
+    a = decide(
+        _inputs(
+            house_average=24.0, target=21.0, band_low=20.0, band_high=23.0,
+            thermostat_temperature=None,
+        ),
+        CFG,
+    )
+    assert a.set_band is True and a.band_low < 20.0
+
+
+def test_within_deadband_does_not_learn_while_saturated():
+    # Settled at target but the compressor is flat out -> the band is not at steady state, so freeze
+    # learning (K must not be sampled from a wound-up band).
+    a = decide(
+        _inputs(
+            house_average=21.0, target=21.0, band_low=20.0, band_high=23.0,
+            thermostat_temperature=26.0,
+        ),
+        CFG,
+    )
+    assert a.reason == "within_deadband_saturated" and a.new_offset is None
+
+
+def test_within_deadband_learns_when_modulating():
+    # Settled and the own sensor sits inside the band (modulating) -> a real steady state, so learn.
+    a = decide(
+        _inputs(
+            house_average=21.0, target=21.0, band_low=20.0, band_high=23.0,
+            thermostat_temperature=21.5,
+        ),
+        CFG,
+    )
+    assert a.reason == "within_deadband" and a.new_offset is not None

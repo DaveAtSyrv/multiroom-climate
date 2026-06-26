@@ -269,6 +269,38 @@ async def test_shadow_proposes_trim_when_house_drifts(hass: HomeAssistant) -> No
     assert data.proposed.band_high == pytest.approx(69.5)
 
 
+async def test_saturated_thermostat_blocks_windup_trim(hass: HomeAssistant) -> None:
+    # The discriminating test that the coordinator feeds the thermostat's *own* temperature into
+    # decide(): with the house warm (which on its own would trim the band DOWN) but the thermostat's
+    # sensor far above the band (cooling flat-out), the anti-windup guard must block the down-step.
+    # If current_temperature weren't wired through, saturation would read 0 and this would "trim".
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    hass.states.async_set(
+        "climate.daikin",
+        "heat_cool",
+        {
+            "hvac_modes": ["off", "heat_cool"],
+            "target_temp_low": 67.0,
+            "target_temp_high": 69.0,
+            "min_temp": 45.0,
+            "max_temp": 95.0,
+            "current_temperature": 80.0,  # 80 >> band_high 69 + margin 2 → cooling-saturated
+        },
+    )
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    await coordinator._async_update_data()  # tick 1 seeds target = 70
+    hass.states.async_set("sensor.a", "74.0")  # house now well above target → would trim DOWN
+    data = await coordinator._async_update_data()  # tick 2
+
+    assert data.proposed is not None
+    assert data.proposed.reason == "windup_blocked"
+    assert data.proposed.set_band is False
+    # The own-sensor reading is surfaced (it drives the guard and signals the guard is armed).
+    assert data.thermostat_temperature == 80.0
+
+
 # --- humidity sensor wiring (the end-to-end config→read→decide thread) ------
 
 async def test_humidity_sensor_drives_overcool_trim_down(hass: HomeAssistant) -> None:

@@ -192,7 +192,7 @@ Multiroom Climate is a **local-polling** integration — no cloud, no push. A si
 every **60 seconds** and, on each tick:
 
 1. Reads your selected room sensors (skipping any that are unavailable) and computes the house average.
-2. Reads the wrapped thermostat — its mode, AUTO band, and temperature bounds.
+2. Reads the wrapped thermostat — its mode, AUTO band, temperature bounds, **and its own sensor**.
 3. Runs the control logic (offset learning, feedforward/trim, changeover, fan-circulate, day/night
    schedule).
 4. **If the master switch is on**, writes the resulting band to the thermostat; **if off**, computes
@@ -201,6 +201,22 @@ every **60 seconds** and, on each tick:
 Everything runs locally against entities already in Home Assistant, so there's no external API to
 rate-limit. Setting the target on the climate entity triggers an immediate refresh rather than
 waiting for the next poll.
+
+### Anti-windup (why the band doesn't run away on a big setback)
+
+When you ask for a large setback the equipment may not be able to keep up — it runs flat-out and its
+own sensor sits well outside the band. The controller watches the thermostat's **own** temperature
+for exactly this: while the equipment is saturated it stops sliding the band further in that
+direction (it would actuate nothing and only "wind up" the band away from where it belongs) and
+pauses learning the sensor-bias offset (so the bias is never learned from a non-steady-state band).
+This is surfaced as `shadow_status: windup_blocked` / `within_deadband_saturated`.
+
+This guard needs the wrapped thermostat to publish its **own** temperature — visible as
+`shadow_thermostat_temperature`. If that attribute is `None`, the thermostat doesn't expose its
+sensor and the guard is **inert** (the integration falls back to its prior behaviour). The
+saturation threshold is the `saturation_margin` tunable (default `2.0`, in your system's unit) — how
+far outside the band the thermostat's sensor must sit to count as flat-out; it was tuned for °F, so
+a °C setup or an undersized system may want it lower.
 
 ## Troubleshooting
 
@@ -243,6 +259,12 @@ v1 keeps the control model deliberately simple. Current limitations (most lifted
   from its own.
 - **The stale-sensor failsafe doesn't notify yet.** If every sensor goes stale it freezes the setpoint
   and surfaces a `shadow_notify` message, but doesn't actually send a notification.
+- **A deep setback recovers as fast as the equipment allows — no faster.** After a large day↔night
+  setback the controller slides the band toward the new target, but the house only moves at the rate
+  the HVAC (and passive warming/cooling) can manage. In cooling season especially, *warming back up*
+  from a low night setpoint is largely passive, so a big morning swing can take a while. The
+  optimal-start lead helps, but a very large setback will still lag. Prefer a modest setback if you
+  want a tight morning target.
 
 ## Removing the integration
 
