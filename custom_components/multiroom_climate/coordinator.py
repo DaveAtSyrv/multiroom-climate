@@ -459,6 +459,22 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._save_state()
         await self.async_request_refresh()
 
+    @property
+    def learned_offset(self) -> float:
+        """The current learned band-to-house offset K (the number entity reads this)."""
+        return self._learned_offset
+
+    async def async_set_learned_offset(self, offset: float) -> None:
+        """Override the learned offset K (the number entity calls this).
+
+        K is normally self-tuning, but exposing a manual override lets the user reset it to 0
+        (relearn from scratch) or set a known-good value — recovering from a bad learned state
+        without deleting and re-adding the integration. Persisted immediately and applied next tick.
+        """
+        self._learned_offset = offset
+        self._save_state()
+        await self.async_request_refresh()
+
     def _apply_schedule(self) -> float | None:
         """Re-assert the target on a day/night schedule transition; return the scheduled setpoint.
 

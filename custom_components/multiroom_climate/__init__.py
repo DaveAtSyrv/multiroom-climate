@@ -23,7 +23,7 @@ from .coordinator import (
     thermostat_missing_issue_id,
 )
 
-_PLATFORMS = [Platform.CLIMATE, Platform.SWITCH]
+_PLATFORMS = [Platform.CLIMATE, Platform.NUMBER, Platform.SWITCH]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MultiroomConfigEntry) -> bool:
