@@ -90,13 +90,20 @@ the correct, deadlock-free fix and the extra plumbing is modest.
 
 ## 5. Build plan (once approach is chosen)
 
-1. **Failing regression test first** — DONE (`tests/test_windup_regression.py`): drives `decide()`
-   through the 70→64 setback with a lagging house, asserts `K` stays sane; `xfail(strict=True)` until
-   the fix flips it. Reproduces the live −3.66 → ~−12 corruption.
-2. Implement the chosen anti-windup + learning gate (small CLs, velocity-form preserved — do NOT
-   convert to proportional-position; the accumulation absorbs sensor bias, see controller.py docstring).
-   **← NEXT (Option A): add thermostat own-temp / `hvac_action` to `ControllerInputs` + coordinator
-   wiring; gate band-winding + K-learning on equipment-not-saturated.**
+1. **Failing regression test first** — DONE, then rewritten as a **band-coupled closed-loop** sim
+   (`tests/test_windup_regression.py`): a saturating plant moves the thermostat toward the band and
+   the house tracks it with a fixed bias. Two tests: setback-no-corruption *and* cold-start
+   convergence (the latter guards against an over-blocking "freeze everything" fix — a band-
+   independent plant couldn't tell them apart). xfail removed; both pass on the fixed engine.
+2. **Pure-controller Option A — DONE** (this branch): `ControllerInputs.thermostat_temperature`
+   (own sensor), `ControllerConfig.saturation_margin=2.0` (validated vs live: ~0.2° outside band
+   when modulating, ~10° when saturated), `_demand_saturation()`, anti-windup (block a band step
+   that pushes further in a saturated demand direction → `windup_blocked`), and a saturation gate on
+   K-learning. Velocity-form preserved. `None` own-temp → behaves as before (graceful).
+   **← NEXT, REQUIRED before the fix is live: coordinator wiring — read the wrapped thermostat's
+   `current_temperature` into `ControllerInputs.thermostat_temperature` + a coordinator test
+   (assert it's populated, plus one saturated end-to-end case). Until this lands the guard is inert
+   live (`_demand_saturation` only ever sees `None`). DO NOT mark the fix done before this.**
 3. Reset/override the learned offset — DONE, shipped separately as **PR #50** (branch
    `feat/learned-offset-override`): a config-category, disabled-by-default Number entity exposing `K`
    (set 0 to relearn, or seed a known-good value); recoverable from the UI without delete+re-add.
