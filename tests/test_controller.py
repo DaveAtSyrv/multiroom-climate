@@ -466,7 +466,7 @@ def test_within_deadband_does_not_learn_while_saturated():
         ),
         CFG,
     )
-    assert a.reason == "within_deadband" and a.new_offset is None
+    assert a.reason == "within_deadband_saturated" and a.new_offset is None
 
 
 def test_within_deadband_learns_when_modulating():

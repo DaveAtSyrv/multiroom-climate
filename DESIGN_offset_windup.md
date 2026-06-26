@@ -99,11 +99,13 @@ the correct, deadlock-free fix and the extra plumbing is modest.
    (own sensor), `ControllerConfig.saturation_margin=2.0` (validated vs live: ~0.2° outside band
    when modulating, ~10° when saturated), `_demand_saturation()`, anti-windup (block a band step
    that pushes further in a saturated demand direction → `windup_blocked`), and a saturation gate on
-   K-learning. Velocity-form preserved. `None` own-temp → behaves as before (graceful).
-   **← NEXT, REQUIRED before the fix is live: coordinator wiring — read the wrapped thermostat's
-   `current_temperature` into `ControllerInputs.thermostat_temperature` + a coordinator test
-   (assert it's populated, plus one saturated end-to-end case). Until this lands the guard is inert
-   live (`_demand_saturation` only ever sees `None`). DO NOT mark the fix done before this.**
+   K-learning (distinct `within_deadband_saturated` reason for diagnostics). Velocity-form preserved.
+   `None` own-temp → behaves as before (graceful).
+   **Coordinator wiring — DONE** (this branch): `_read_wrapped` reads `ATTR_CURRENT_TEMPERATURE` into
+   `_WrappedReading.current_temperature` → `ControllerInputs.thermostat_temperature`; end-to-end test
+   `test_saturated_thermostat_blocks_windup_trim` proves a saturated sensor turns a would-be down-trim
+   into `windup_blocked`. The guard is now live. `/simplify` run (4 agents) — applied the distinct
+   reason + asymmetry comment; rest clean. 155 tests, 100% cov, mypy + ruff green.
 3. Reset/override the learned offset — DONE, shipped separately as **PR #50** (branch
    `feat/learned-offset-override`): a config-category, disabled-by-default Number entity exposing `K`
    (set 0 to relearn, or seed a known-good value); recoverable from the UI without delete+re-add.

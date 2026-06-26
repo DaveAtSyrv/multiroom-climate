@@ -259,8 +259,11 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
         # with a slow EMA. Gating on the deadband means the house is never sampled mid-recovery; the
         # extra saturation gate means we also never sample while the band is still wound away from
         # steady state (a saturated plant), which would corrupt K (see DESIGN_offset_windup.md).
+        # Saturation in *either* direction means the in-deadband band isn't a true steady state, so
+        # this gate is non-directional (`!= 0`) — unlike the anti-windup trim gate below, which only
+        # blocks the *worsening* step. A distinct reason surfaces "holding but not learning".
         if _demand_saturation(inputs, config) != 0:
-            return Action(set_band=False, reason="within_deadband")  # hold, but don't learn
+            return Action(set_band=False, reason="within_deadband_saturated")
         new_offset = inputs.learned_offset + config.offset_alpha * (
             (band_center - inputs.house_average) - inputs.learned_offset
         )
