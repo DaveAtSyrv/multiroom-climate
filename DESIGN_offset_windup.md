@@ -1,7 +1,7 @@
 # Design: fix offset/integral windup on large scheduled setbacks
 
-Status: **DESIGN — blocked on a user approach decision (see §4).** Approach-independent work
-(regression test, reset-offset entity) can proceed while blocked.
+Status: **APPROVED — Option A (equipment-saturation signal). Implementing.** User chose Option A on
+2026-06-26. Build per §5 on branch `fix/offset-windup`.
 
 ## 1. Root cause (confirmed against a live run, 2026-06-25/26)
 
@@ -66,7 +66,7 @@ recovery time, and the "need a big W for fast pulldown" worry evaporates.
 **But `ControllerInputs` today carries only `house_average` + the band — no wrapped-thermostat
 temperature and no `hvac_action`.** So the saturation-signal fix needs a data-model change.
 
-## 4. Approach decision (NEEDS USER INPUT)
+## 4. Approach decision — DECIDED: Option A (equipment-saturation signal)
 
 ### Option A — add an equipment-saturation signal (recommended, principled)
 Add the wrapped thermostat's own temperature (and/or `hvac_action`) to `ControllerInputs` + wire it
