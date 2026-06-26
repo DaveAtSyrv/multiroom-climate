@@ -52,6 +52,14 @@ K=0 could stay 0, making the next feedforward overshoot. Self-corrects via trim;
 The heating-saturated (`+1`) path is unit-tested but the live incident was cooling-only. Fold into
 the post-deploy live-verification (watch a heating setback too).
 
+### P3 — End-to-end test coverage is cooling-only
+The coordinator-level (wiring) test `test_saturated_thermostat_blocks_windup_trim` exercises the
+*cooling*-saturated `windup_blocked` path. The heating-saturated (`+1`) path and the
+`within_deadband_saturated` learning-freeze are covered at the **controller unit level** but not
+end-to-end through the coordinator. The wiring is symmetric, so this is completeness, not a gap in
+behavior — add two sibling coordinator tests if/when P1 is implemented (same fixture, different
+`current_temperature`). Low value alone; fold into the P1 CL.
+
 ## Nitpicks (not actioned)
 - `DESIGN_*` / `FOLLOWUPS_*` docs in repo root — minor clutter; could move to `docs/`.
 - Resetting K via the #50 number doesn't immediately re-feedforward the band (waits for the next
@@ -63,5 +71,8 @@ the post-deploy live-verification (watch a heating setback too).
 3. **(P2/P3)** `saturation_margin` tuning + unit note in docs.
 4. Heating-season + overall live verification → the post-deploy monitoring loop offer.
 
-Status: findings triaged. No control-law changes proposed (PR #51 is correctness-clean). Items 1–3
-are user-approved-then-implement; nothing here is "manufacture work."
+Status: **REVIEW COMPLETE & TRIAGED.** All listed review areas covered (correctness — clean; docs;
+`saturation_margin` unit-dependence; silent-inertness; recovery speed; observability; test
+completeness). No control-law changes proposed (PR #51 is correctness-clean and CI-green/mergeable).
+Items P1–P3 are **user-approved-then-implement** — none are started, nothing here is manufactured.
+The review loop stopped here to avoid padding the list; re-arm it or just say "do P1/P2" to implement.
