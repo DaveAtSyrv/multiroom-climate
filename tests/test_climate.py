@@ -93,6 +93,7 @@ async def test_exposes_shadow_decision_attributes(
             "target_temp_high": 69.0,
             "min_temp": 45.0,
             "max_temp": 95.0,
+            "current_temperature": 68.0,
         },
     )
 
@@ -102,6 +103,8 @@ async def test_exposes_shadow_decision_attributes(
     assert state is not None
     # The controller's decision is surfaced for observability; with the switch off, nothing is written.
     assert state.attributes["shadow_target"] == 70.0
+    # The wrapped thermostat's own sensor — also confirms the anti-windup guard is armed (not None).
+    assert state.attributes["shadow_thermostat_temperature"] == 68.0
     assert state.attributes["shadow_status"] == "within_deadband"
     assert state.attributes["shadow_sensors_fresh"] == 2
     assert state.attributes["shadow_sensors_total"] == 2

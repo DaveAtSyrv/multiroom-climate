@@ -329,6 +329,7 @@ class CoordinatorData:
     hvac_modes: tuple[HVACMode, ...]
     band_low: float | None
     band_high: float | None
+    thermostat_temperature: float | None  # wrapped thermostat's OWN sensor; None = anti-windup guard inert
     temp_min: float | None  # wrapped thermostat's lower bound — bounds the house-target dial
     temp_max: float | None  # wrapped thermostat's upper bound — bounds the house-target dial
     target_temp_step: float | None  # wrapped thermostat's step (None = HA default) for the house-target dial
@@ -780,6 +781,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             hvac_modes=wrapped.hvac_modes,
             band_low=wrapped.band_low,
             band_high=wrapped.band_high,
+            thermostat_temperature=wrapped.current_temperature,
             temp_min=wrapped.temp_min,
             temp_max=wrapped.temp_max,
             target_temp_step=wrapped.target_temp_step,

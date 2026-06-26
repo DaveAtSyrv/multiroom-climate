@@ -297,6 +297,8 @@ async def test_saturated_thermostat_blocks_windup_trim(hass: HomeAssistant) -> N
     assert data.proposed is not None
     assert data.proposed.reason == "windup_blocked"
     assert data.proposed.set_band is False
+    # The own-sensor reading is surfaced (it drives the guard and signals the guard is armed).
+    assert data.thermostat_temperature == 80.0
 
 
 # --- humidity sensor wiring (the end-to-end config→read→decide thread) ------
