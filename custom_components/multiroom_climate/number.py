@@ -91,6 +91,11 @@ class MultiroomLearnedOffsetNumber(
         self._read = read
         self._write = write
         self._attr_translation_key = key
+        # unique_id is per-offset ({entry}_cool_offset / _heat_offset). Upgrading from the single
+        # {entry}_learned_offset entity is NOT auto-migrated: it's a config-category, disabled-by-default
+        # diagnostic, so a registry row only exists if the user explicitly enabled it — in which case the
+        # old one goes unavailable and can be deleted in the UI. Not worth an entity-registry migration
+        # for a hidden override; the persisted *control state* migrates separately (see coordinator).
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_device_info = build_device_info(entry)
 
