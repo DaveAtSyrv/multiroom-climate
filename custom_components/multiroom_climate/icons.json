@@ -6,8 +6,11 @@
       }
     },
     "number": {
-      "learned_offset": {
-        "default": "mdi:thermometer-lines"
+      "cool_offset": {
+        "default": "mdi:snowflake-thermometer"
+      },
+      "heat_offset": {
+        "default": "mdi:thermometer-plus"
       }
     }
   }

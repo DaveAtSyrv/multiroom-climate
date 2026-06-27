@@ -1,4 +1,4 @@
-"""Tests for the learned-offset override number (the manual escape hatch for K)."""
+"""Tests for the learned-offset override numbers (the manual escape hatch for the cool/heat offsets)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,13 @@ _ENTRY_DATA = {
     CONF_CLIMATE_ENTITY: "climate.daikin",
     CONF_TARGET_SENSORS: ["sensor.living_room"],
 }
-_UNIQUE_SUFFIX = "_learned_offset"
+
+# (translation_key / unique-id suffix, coordinator setter, coordinator getter). Parametrizes every
+# test over both offsets so the cool and heat numbers are covered identically.
+_OFFSETS = [
+    ("cool_offset", "async_set_cool_offset", "cool_offset"),
+    ("heat_offset", "async_set_heat_offset", "heat_offset"),
+]
 
 
 def _seed_states(hass: HomeAssistant) -> None:
@@ -35,6 +41,7 @@ def _seed_states(hass: HomeAssistant) -> None:
             "target_temp_high": 69.0,
             "min_temp": 45.0,
             "max_temp": 95.0,
+            "hvac_action": "cooling",
         },
     )
 
@@ -47,8 +54,9 @@ def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
     return entry
 
 
-async def test_coordinator_set_learned_offset_persists_and_reads_back(
-    hass: HomeAssistant, enable_custom_integrations
+@pytest.mark.parametrize(("key", "setter", "getter"), _OFFSETS)
+async def test_coordinator_set_offset_persists_and_reads_back(
+    hass: HomeAssistant, enable_custom_integrations, key: str, setter: str, getter: str
 ) -> None:
     _seed_states(hass)
     entry = _make_entry(hass)
@@ -56,65 +64,59 @@ async def test_coordinator_set_learned_offset_persists_and_reads_back(
     await hass.async_block_till_done()
     coordinator = entry.runtime_data
 
-    # An override moves K to (approximately) the requested value; the slow EMA then refines it from
-    # there (one re-learn tick nudges it by alpha toward the measured band-vs-house gap).
-    await coordinator.async_set_learned_offset(-3.5)
+    # An override moves the offset to (approximately) the requested value; the slow EMA then refines
+    # it from there (the active-regime offset gets nudged by alpha toward the measured band-vs-house gap).
+    await getattr(coordinator, setter)(-3.5)
     await hass.async_block_till_done()
-    assert coordinator.learned_offset == pytest.approx(-3.5, abs=0.2)
+    assert getattr(coordinator, getter) == pytest.approx(-3.5, abs=0.2)
 
 
+@pytest.mark.parametrize(("key", "setter", "getter"), _OFFSETS)
 async def test_offset_number_disabled_by_default(
-    hass: HomeAssistant, enable_custom_integrations
+    hass: HomeAssistant, enable_custom_integrations, key: str, setter: str, getter: str
 ) -> None:
-    # It's an advanced escape hatch — present in the registry but disabled unless the user enables it.
+    # Advanced escape hatches — present in the registry but disabled unless the user enables them.
     _seed_states(hass)
     entry = _make_entry(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
     registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id(
-        "number", DOMAIN, f"{entry.entry_id}{_UNIQUE_SUFFIX}"
-    )
+    entity_id = registry.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_{key}")
     assert entity_id is not None
     assert registry.async_get(entity_id).disabled_by is not None
 
 
-async def test_offset_number_overrides_and_resets_k(
-    hass: HomeAssistant, enable_custom_integrations
+@pytest.mark.parametrize(("key", "setter", "getter"), _OFFSETS)
+async def test_offset_number_overrides_and_resets(
+    hass: HomeAssistant, enable_custom_integrations, key: str, setter: str, getter: str
 ) -> None:
     _seed_states(hass)
     entry = _make_entry(hass)
     # Pre-register the entity enabled so it gets a live state we can drive via the service.
     registry = er.async_get(hass)
     registry.async_get_or_create(
-        "number",
-        DOMAIN,
-        f"{entry.entry_id}{_UNIQUE_SUFFIX}",
-        config_entry=entry,
-        disabled_by=None,
+        "number", DOMAIN, f"{entry.entry_id}_{key}", config_entry=entry, disabled_by=None
     )
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     coordinator = entry.runtime_data
 
-    entity_id = registry.async_get_entity_id(
-        "number", DOMAIN, f"{entry.entry_id}{_UNIQUE_SUFFIX}"
-    )
+    entity_id = registry.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_{key}")
     assert entity_id is not None
 
     # Drive a corrupted offset in through the entity, confirm both coordinator and displayed state...
     await hass.services.async_call(
         "number", "set_value", {"entity_id": entity_id, "value": -9.0}, blocking=True
     )
-    assert coordinator.learned_offset < -8.0
+    assert getattr(coordinator, getter) < -8.0
     assert float(hass.states.get(entity_id).state) < -8.0
 
     # ...then reset it to ~0 through the same entity (no delete+re-add needed); corruption cleared.
     await hass.services.async_call(
         "number", "set_value", {"entity_id": entity_id, "value": 0.0}, blocking=True
     )
-    assert coordinator.learned_offset == pytest.approx(0.0, abs=0.3)
+    assert getattr(coordinator, getter) == pytest.approx(0.0, abs=0.3)
     assert float(hass.states.get(entity_id).state) == pytest.approx(0.0, abs=0.3)
 
 
@@ -122,7 +124,10 @@ def test_parallel_updates_zero_for_coordinator_platform() -> None:
     assert number_platform.PARALLEL_UPDATES == 0
 
 
-def test_icons_json_keyed_by_number_translation_key() -> None:
+def test_icons_json_keyed_by_number_translation_keys() -> None:
     icons_path = Path(number_platform.__file__).parent / "icons.json"
     icons = json.loads(icons_path.read_text())
-    assert icons["entity"]["number"]["learned_offset"]["default"] == "mdi:thermometer-lines"
+    number_icons = icons["entity"]["number"]
+    # Both offset numbers have an icon, keyed by their translation_key (hassfest enforces the match).
+    assert "cool_offset" in number_icons
+    assert "heat_offset" in number_icons
