@@ -247,8 +247,17 @@ def _overcool(inputs: ControllerInputs, config: ControllerConfig) -> float:
     Only when cooling (mode-gated, not temperature-gated — see ``ControllerInputs.cooling``) and a
     fresh humidity reading sits above ``humidity_target``. The offset is ``humidity_gain`` per point
     of excess RH, capped at ``humidity_max_overcool``.
+
+    Also gated on the *active demand regime* already being cool (``last_placement_regime``). Overcool
+    feeds ``effective_target``, which now drives the discrete placement-regime flip + changeover
+    feedforward — so an unconditional overcool could drag ``effective_target`` below a house that is
+    still *below* the user's target during a humid heat-up and manufacture a phantom heat→cool flip,
+    commanding cooling before the house ever reaches target. Restricting it to an established cool
+    regime lets overcool *deepen* cooling (its purpose) but never *create* a changeover. Genuine cool
+    entry happens on nominal demand (house warms past target) without overcool's help; overcool then
+    engages on the next tick once the regime reads cool — a one-tick lag with no UX cost.
     """
-    if inputs.humidity is None or not inputs.cooling:
+    if inputs.humidity is None or not inputs.cooling or inputs.last_placement_regime != "cool":
         return 0.0
     excess = max(0.0, inputs.humidity - config.humidity_target)
     return min(config.humidity_max_overcool, config.humidity_gain * excess)

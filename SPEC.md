@@ -220,3 +220,10 @@ MIT licensed. README leads with a non-affiliation disclaimer.
   a changeover (surfaced live: cooling ≈ −4 °F, heating ≈ −1 °F). Placement uses a sticky demand-regime
   hysteresis (with a regime-flip feedforward for responsiveness); learning attributes by `hvac_action`.
   Old single-offset state migrates into `cool_offset` on load (no store-version bump).
+- 2026-06-27 — Gated humidity overcool on the placement regime already being `cool`. Overcool feeds
+  `effective_target`, which the new regime logic uses for the discrete heat↔cool flip; an unconditional
+  overcool could pull `effective_target` below a house still below target during a humid heat-up and
+  manufacture a phantom heat→cool changeover (commanding cooling before reaching target). Restricting it
+  to an established cool regime lets overcool *deepen* cooling but never *create* a changeover; cool
+  entry happens on nominal demand and overcool engages a tick later. (Only reachable with a humidity
+  sensor configured.)

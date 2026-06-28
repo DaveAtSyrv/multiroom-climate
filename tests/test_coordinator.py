@@ -325,6 +325,9 @@ async def test_humidity_sensor_drives_overcool_trim_down(hass: HomeAssistant) ->
     hass.states.async_set("sensor.rh", "70.0")  # 20 over the 50% default → 2.0°F overcool (the cap)
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"], humidity_sensor="sensor.rh")
+    # Overcool only deepens an already-cool regime (it never manufactures a heat→cool flip), so seed
+    # the prior regime as cool — the realistic precondition for a humid cooling steady state.
+    coordinator._last_placement_regime = "cool"
 
     data = await coordinator._async_update_data()
 

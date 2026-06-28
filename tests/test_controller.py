@@ -284,14 +284,22 @@ _HUMID_CFG = replace(CFG, humidity_target=50.0, humidity_gain=0.1, humidity_max_
 
 def test_overcool_trims_down_when_cooling_and_humid():
     # Settled at target (error 0) but RH 70 while cooling -> effective target 21-2=19 -> trim down.
-    a = decide(_inputs(house_average=21.0, target=21.0, humidity=70.0, cooling=True), _HUMID_CFG)
+    a = decide(
+        _inputs(house_average=21.0, target=21.0, humidity=70.0, cooling=True,
+                last_placement_regime="cool"),
+        _HUMID_CFG,
+    )
     assert a.set_band is True and a.reason == "trim"
     assert a.band_low < 20.0 and a.band_high < 23.0
 
 
 def test_overcool_offset_capped():
     # RH 200 over -> 0.1*150=15° raw, capped to 2.0: effective target 19, error -2.0 -> trim caps at max_step.
-    a = decide(_inputs(house_average=21.0, target=21.0, humidity=200.0, cooling=True), _HUMID_CFG)
+    a = decide(
+        _inputs(house_average=21.0, target=21.0, humidity=200.0, cooling=True,
+                last_placement_regime="cool"),
+        _HUMID_CFG,
+    )
     assert a.set_band is True
     assert (20.0 - a.band_low) == _HUMID_CFG.max_step  # error is -2.0, trim clamps to max_step down
 
@@ -316,7 +324,7 @@ def test_overcool_does_not_perturb_feedforward():
     # Target change fires feedforward keyed on the NOMINAL target, ignoring the humidity overcool.
     a = decide(
         _inputs(target=24.0, last_target=21.0, offset=2.0, band_low=22.0, band_high=24.0,
-                humidity=70.0, cooling=True),
+                humidity=70.0, cooling=True, last_placement_regime="cool"),
         _HUMID_CFG,
     )
     assert a.reason == "feedforward"
@@ -328,11 +336,26 @@ def test_overcool_learns_at_the_overcooled_steady_state():
     # learning during overcool is fine (the EMA tracks band_center - house regardless of target).
     a = decide(
         _inputs(house_average=19.0, target=21.0, band_low=20.0, band_high=23.0,
-                offset=0.0, humidity=70.0, cooling=True),
+                offset=0.0, humidity=70.0, cooling=True, last_placement_regime="cool"),
         _HUMID_CFG,
     )
     assert a.reason == "within_deadband"
     assert a.new_offset == pytest.approx(0.05 * (21.5 - 19.0))
+
+
+def test_overcool_suppressed_in_heat_regime_no_phantom_cool_flip():
+    # The bug this guards: a humid heat-up with the house still BELOW target. Unconditional overcool
+    # would drag effective_target below the house and flip placement to cool, commanding cooling before
+    # the house reaches target. Gated on last_placement_regime=="cool", overcool stays off while heating
+    # so the regime holds heat and no changeover feedforward fires.
+    a = decide(
+        _inputs(house_average=20.3, target=21.0, band_low=19.5, band_high=22.5,
+                cool_offset=-4.0, heat_offset=-1.0, humidity=68.0, cooling=True,
+                last_placement_regime="heat"),
+        _HUMID_CFG,
+    )
+    assert a.placement_regime == "heat"  # held heat — no phantom cool flip
+    assert a.reason != "feedforward"  # no changeover jump to a cool band
 
 
 # --- closed-loop simulation (the merge-blocking tests) ---------------------
