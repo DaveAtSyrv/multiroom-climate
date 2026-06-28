@@ -358,6 +358,25 @@ def test_overcool_suppressed_in_heat_regime_no_phantom_cool_flip():
     assert a.reason != "feedforward"  # no changeover jump to a cool band
 
 
+def test_cooling_engages_within_two_degrees_even_when_humid():
+    # The overcool gate must not cost responsiveness: when the house genuinely warms past target while
+    # humid (prior regime heat), cool entry rides NOMINAL demand — overcool is still suppressed on the
+    # flip tick (last regime heat) so the band jumps straight to target+cool_offset, engaging cooling
+    # within the +2°F bar. Overcool only deepens cooling on the following tick (regime now cool).
+    cfg = replace(_HUMID_CFG, temp_min=45.0, temp_max=95.0)
+    target, cool_offset = 70.0, -4.0
+    house = target + 1.2  # past the flip margin, under the +2 bar
+    a = decide(
+        _inputs(house_average=house, target=target, band_low=68.0, band_high=72.0,
+                cool_offset=cool_offset, heat_offset=-1.0, humidity=75.0, cooling=True,
+                last_placement_regime="heat"),
+        cfg,
+    )
+    assert house < target + 2.0
+    assert a.reason == "feedforward"
+    assert (a.band_low + a.band_high) / 2.0 == pytest.approx(target + cool_offset)  # 66, cooling hard
+
+
 # --- closed-loop simulation (the merge-blocking tests) ---------------------
 
 # A toy *physics* plant, written independently of the controller's formula: the thermostat drives
