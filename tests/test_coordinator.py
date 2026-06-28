@@ -222,15 +222,25 @@ async def test_band_none_when_setpoints_absent(hass: HomeAssistant) -> None:
 
 
 def _heat_cool(
-    low: float, high: float, *, min_temp: float = 45.0, max_temp: float = 95.0
+    low: float,
+    high: float,
+    *,
+    min_temp: float = 45.0,
+    max_temp: float = 95.0,
+    action: str | None = "cooling",
 ) -> tuple[str, dict]:
-    return "heat_cool", {
+    # The live Daikin runs heat_cool and reports an hvac_action (cooling/drying/heating/idle); that
+    # action is what selects which learned offset updates. Default "cooling" mirrors a summer tick.
+    attrs = {
         "hvac_modes": ["off", "heat_cool"],
         "target_temp_low": low,
         "target_temp_high": high,
         "min_temp": min_temp,
         "max_temp": max_temp,
     }
+    if action is not None:
+        attrs["hvac_action"] = action
+    return "heat_cool", attrs
 
 
 async def test_shadow_seeds_target_and_learns_offset_when_settled(hass: HomeAssistant) -> None:
@@ -242,12 +252,14 @@ async def test_shadow_seeds_target_and_learns_offset_when_settled(hass: HomeAssi
     data = await coordinator._async_update_data()
 
     # Target seeds to the current house average; error 0 → within deadband → learn, propose nothing.
+    # The wrapped thermostat reports hvac_action=cooling, so the COOL offset is the one that learns.
     assert data.target == 70.0
     assert data.proposed is not None
     assert data.proposed.reason == "within_deadband"
     assert data.proposed.set_band is False
     # band_center 68 − house 70 = −2; EMA from 0 with alpha 0.05 → −0.1.
-    assert data.learned_offset == pytest.approx(-0.1)
+    assert data.cool_offset == pytest.approx(-0.1)
+    assert data.heat_offset == 0.0  # heating regime never ran → untouched
 
 
 async def test_shadow_proposes_trim_when_house_drifts(hass: HomeAssistant) -> None:
@@ -256,17 +268,18 @@ async def test_shadow_proposes_trim_when_house_drifts(hass: HomeAssistant) -> No
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"])
 
-    await coordinator._async_update_data()  # tick 1 seeds target = 70
-    hass.states.async_set("sensor.a", "66.0")  # house drops well below target
+    await coordinator._async_update_data()  # tick 1 seeds target = 70, cool placement regime
+    hass.states.async_set("sensor.a", "74.0")  # house drifts ABOVE target — still a cooling demand
     data = await coordinator._async_update_data()  # tick 2
 
+    # Same (cool) regime across both ticks → no changeover, so the slow trim handles the drift.
     assert data.target == 70.0
     assert data.proposed is not None
     assert data.proposed.reason == "trim"
     assert data.proposed.set_band is True
-    # error 70−66 = 4; step clamp(0.3*4, −0.5, 0.5) = 0.5; band shifts +0.5 (in °F bounds).
-    assert data.proposed.band_low == pytest.approx(67.5)
-    assert data.proposed.band_high == pytest.approx(69.5)
+    # error 70−74 = −4; step clamp(0.3*−4, −0.5, 0.5) = −0.5; band shifts −0.5 (in °F bounds).
+    assert data.proposed.band_low == pytest.approx(66.5)
+    assert data.proposed.band_high == pytest.approx(68.5)
 
 
 async def test_saturated_thermostat_blocks_windup_trim(hass: HomeAssistant) -> None:
@@ -312,6 +325,9 @@ async def test_humidity_sensor_drives_overcool_trim_down(hass: HomeAssistant) ->
     hass.states.async_set("sensor.rh", "70.0")  # 20 over the 50% default → 2.0°F overcool (the cap)
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"], humidity_sensor="sensor.rh")
+    # Overcool only deepens an already-cool regime (it never manufactures a heat→cool flip), so seed
+    # the prior regime as cool — the realistic precondition for a humid cooling steady state.
+    coordinator._last_placement_regime = "cool"
 
     data = await coordinator._async_update_data()
 
@@ -514,10 +530,11 @@ async def test_shadow_skipped_without_band(hass: HomeAssistant) -> None:
 
     data = await coordinator._async_update_data()
 
-    # No AUTO band → decide() can't run → no proposal, target/offset untouched.
+    # No AUTO band → decide() can't run → no proposal, target/offsets untouched.
     assert data.proposed is None
     assert data.target is None
-    assert data.learned_offset == 0.0
+    assert data.cool_offset == 0.0
+    assert data.heat_offset == 0.0
 
 
 async def test_shadow_skipped_without_equipment_bounds(hass: HomeAssistant) -> None:
@@ -539,21 +556,22 @@ async def test_shadow_skipped_without_equipment_bounds(hass: HomeAssistant) -> N
     assert data.band_high == 69.0
 
 
-async def test_trim_clamped_to_equipment_max_temp(hass: HomeAssistant) -> None:
+async def test_upward_band_move_clamped_to_equipment_max_temp(hass: HomeAssistant) -> None:
     hass.config.units = US_CUSTOMARY_SYSTEM
     hass.states.async_set("sensor.a", "70.0")
-    # Equipment max is only 0.3 above the cool setpoint, so an upward trim can move at most 0.3 —
+    # Equipment max is only 0.3 above the cool setpoint, so an upward band move can go at most 0.3 —
     # proving the bound comes from the thermostat's own max_temp, not the °C default (which would
-    # allow the full 0.5 step).
+    # allow a larger step). A 10° cold drop is a decisive heating demand → changeover feedforward
+    # (which clamps to the same max_temp bound as trim does).
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0, max_temp=69.3))
     coordinator = _make_coordinator(hass, ["sensor.a"])
 
-    await coordinator._async_update_data()  # tick 1 seeds target = 70
-    hass.states.async_set("sensor.a", "60.0")  # cold → upward trim demanded
+    await coordinator._async_update_data()  # tick 1 seeds target = 70 (cool regime)
+    hass.states.async_set("sensor.a", "60.0")  # cold → heating demand, flips regime → feedforward
     data = await coordinator._async_update_data()
 
     assert data.proposed is not None
-    assert data.proposed.reason == "trim"
+    assert data.proposed.reason == "feedforward"
     assert data.proposed.band_high == pytest.approx(69.3)
     assert data.proposed.band_low == pytest.approx(67.3)
 
@@ -564,8 +582,8 @@ async def test_failsafe_after_sensor_loss(hass: HomeAssistant) -> None:
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"])
 
-    await coordinator._async_update_data()  # tick 1: seed target, learn offset
-    learned = coordinator._learned_offset
+    await coordinator._async_update_data()  # tick 1: seed target, learn cool offset
+    learned = coordinator._cool_offset
     hass.states.async_set("sensor.a", "unavailable")  # lose the only sensor
     data = await coordinator._async_update_data()  # tick 2
 
@@ -575,7 +593,7 @@ async def test_failsafe_after_sensor_loss(hass: HomeAssistant) -> None:
     assert data.proposed.set_band is False
     assert data.proposed.notify  # would-notify text, surfaced but not delivered
     assert data.target == 70.0  # target retained across the dropout
-    assert coordinator._learned_offset == learned  # never learn off a missing reading
+    assert coordinator._cool_offset == learned  # never learn off a missing reading
 
 
 async def test_waiting_for_first_reading(hass: HomeAssistant) -> None:
@@ -685,7 +703,10 @@ async def test_restores_state_on_load(hass: HomeAssistant, hass_storage) -> None
 
     await coordinator.async_load_state()
 
-    assert coordinator._learned_offset == -1.5
+    # Legacy single-offset payload migrates into the cooling offset (it was learned while cooling);
+    # the heating offset starts neutral until a heating cycle teaches it.
+    assert coordinator._cool_offset == -1.5
+    assert coordinator._heat_offset == 0.0
     assert coordinator._target == 71.0
 
     # The restored target is not re-seeded to the current house average on the next tick.
@@ -702,7 +723,8 @@ async def test_load_with_no_stored_state_keeps_defaults(
 
     await coordinator.async_load_state()  # nothing stored
 
-    assert coordinator._learned_offset == 0.0
+    assert coordinator._cool_offset == 0.0
+    assert coordinator._heat_offset == 0.0
     assert coordinator._target is None
 
 
@@ -712,27 +734,77 @@ async def test_saves_and_reloads_control_state(hass: HomeAssistant, hass_storage
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"])
 
-    await coordinator._async_update_data()  # settled tick seeds target + learns a non-zero offset
-    learned = coordinator._learned_offset
+    await coordinator._async_update_data()  # settled tick seeds target + learns a non-zero cool offset
+    learned = coordinator._cool_offset
     assert learned != 0.0
     await coordinator._store.async_save(coordinator._persisted_state())  # flush the debounced write
 
     # A fresh coordinator for the same entry restores the persisted control state.
     reloaded = _make_coordinator(hass, ["sensor.a"])
     await reloaded.async_load_state()
-    assert reloaded._learned_offset == learned
+    assert reloaded._cool_offset == learned
     assert reloaded._target == 70.0
 
 
+async def test_learning_routes_to_heat_offset_when_heating(hass: HomeAssistant) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    hass.states.async_set("sensor.a", "70.0")
+    # Settled, but the equipment reports it's heating → the HEAT offset learns; cool is untouched.
+    hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0, action="heating"))
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+
+    data = await coordinator._async_update_data()
+
+    assert data.proposed is not None and data.proposed.reason == "within_deadband"
+    assert data.heat_offset == pytest.approx(-0.1)  # band_center 68 − house 70 = −2, EMA → −0.1
+    assert data.cool_offset == 0.0  # cooling regime never ran → untouched
+
+
+async def test_persists_and_restores_last_placement_regime(hass: HomeAssistant, hass_storage) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    # A restart within the deadband must restore the prior regime, not default to "cool" (which would
+    # jump the band cold and command cooling in heating season).
+    hass_storage[coordinator._store.key] = {
+        "version": 1,
+        "data": {"cool_offset": -4.0, "heat_offset": -1.0, "last_placement_regime": "heat",
+                 "target": 70.0, "last_target": 70.0, "last_change_ts": 0.0},
+    }
+
+    await coordinator.async_load_state()
+
+    assert coordinator._last_placement_regime == "heat"
+    assert coordinator._cool_offset == -4.0
+    assert coordinator._heat_offset == -1.0
+
+
+async def test_legacy_payload_has_no_placement_regime(hass: HomeAssistant, hass_storage) -> None:
+    coordinator = _make_coordinator(hass, ["sensor.a"])
+    hass_storage[coordinator._store.key] = {
+        "version": 1,
+        "data": {"learned_offset": -2.0, "target": 70.0, "last_target": 70.0, "last_change_ts": 0.0},
+    }
+
+    await coordinator.async_load_state()
+
+    # Absent in an old payload → None (the first-tick feedforward guard then handles it safely).
+    assert coordinator._last_placement_regime is None
+
+
 async def _enable_and_drift(hass: HomeAssistant) -> MultiroomClimateCoordinator:
-    """Seed a coordinator at target 70 with control enabled, then drift the house cold (→ trim)."""
+    """Seed a coordinator at target 70 with control enabled, then drift the house warm (→ trim).
+
+    Drifts in the *cooling* direction (the seed tick's cooling action establishes the cool regime, so a
+    same-regime drift trims rather than firing a changeover feedforward) — a small, in-regime drift that
+    exercises the write path via a plain trim.
+    """
     hass.config.units = US_CUSTOMARY_SYSTEM
     hass.states.async_set("sensor.a", "70.0")
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"])
     coordinator.set_enabled(True)
     await coordinator._async_update_data()  # seeds target = 70 (within deadband, no write)
-    hass.states.async_set("sensor.a", "66.0")  # cold → upward trim demanded
+    hass.states.async_set("sensor.a", "74.0")  # warm → downward trim demanded
     return coordinator
 
 
@@ -745,8 +817,9 @@ async def test_writes_band_when_enabled(hass: HomeAssistant) -> None:
     assert data.proposed is not None and data.proposed.reason == "trim"
     assert len(calls) == 1
     assert calls[0].data["entity_id"] == "climate.daikin"
-    assert calls[0].data["target_temp_low"] == pytest.approx(67.5)
-    assert calls[0].data["target_temp_high"] == pytest.approx(69.5)
+    # House 74 vs target 70 → downward trim of −0.5 (max_step) from the 67/69 band.
+    assert calls[0].data["target_temp_low"] == pytest.approx(66.5)
+    assert calls[0].data["target_temp_high"] == pytest.approx(68.5)
     assert coordinator._last_change_ts > 0  # advanced on the successful write
 
 
@@ -756,7 +829,7 @@ async def test_no_write_when_disabled(hass: HomeAssistant) -> None:
     hass.states.async_set("climate.daikin", *_heat_cool(67.0, 69.0))
     coordinator = _make_coordinator(hass, ["sensor.a"])  # default: disabled
     await coordinator._async_update_data()  # seeds target
-    hass.states.async_set("sensor.a", "66.0")
+    hass.states.async_set("sensor.a", "74.0")  # warm → in-regime downward trim
     calls = async_mock_service(hass, "climate", "set_temperature")
 
     data = await coordinator._async_update_data()

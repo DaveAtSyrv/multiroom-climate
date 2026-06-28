@@ -10,6 +10,8 @@ import pytest
 from custom_components.multiroom_climate.controller import (
     ControllerConfig,
     ControllerInputs,
+    _learn_regime,
+    _placement_regime,
     decide,
     decide_fan,
     scheduled_target,
@@ -18,11 +20,16 @@ from custom_components.multiroom_climate.controller import (
 CFG = ControllerConfig(deadband=0.5, kp=0.3, max_step=0.5, min_period_s=720.0, temp_min=7.0, temp_max=35.0)
 
 
-def _inputs(**overrides) -> ControllerInputs:
+def _inputs(*, offset: float = 0.0, **overrides) -> ControllerInputs:
     """A sane default snapshot; override per test. Units are arbitrary (unit-agnostic engine).
 
     ``last_target`` defaults to ``target`` so tests exercise the trim/hold paths without a spurious
     feedforward jump; feedforward tests set ``last_target`` explicitly.
+
+    ``offset`` sets BOTH learned offsets to the same value so regime-agnostic tests don't care which
+    regime is active (placement uses whichever, but both are equal). Tests that exercise the heat/cool
+    split pass ``cool_offset``/``heat_offset`` explicitly. ``hvac_action`` defaults to ``"cooling"`` so
+    the in-deadband learning path attributes to a concrete regime (the COOL offset) by default.
     """
     base = dict(
         available=True,
@@ -32,7 +39,9 @@ def _inputs(**overrides) -> ControllerInputs:
         band_high=23.0,
         now_ts=10_000.0,
         last_change_ts=0.0,  # well past min_period by default
-        learned_offset=0.0,
+        cool_offset=overrides.pop("cool_offset", offset),
+        heat_offset=overrides.pop("heat_offset", offset),
+        hvac_action=overrides.pop("hvac_action", "cooling"),
     )
     base.update(overrides)
     base.setdefault("last_target", base["target"])
@@ -111,7 +120,7 @@ def test_unit_agnostic_same_decision_in_celsius_or_fahrenheit_like_values():
 
 def test_feedforward_jumps_band_center_to_target_plus_offset():
     # band center 23, target jumps to 24, learned K=2 -> new center must be 24+2=26 in ONE step.
-    a = decide(_inputs(target=24.0, last_target=21.0, learned_offset=2.0, band_low=22.0, band_high=24.0), CFG)
+    a = decide(_inputs(target=24.0, last_target=21.0, offset=2.0, band_low=22.0, band_high=24.0), CFG)
     assert a.set_band is True and a.reason == "feedforward"
     assert (a.band_low + a.band_high) / 2.0 == pytest.approx(24.0 + 2.0)
     assert (a.band_high - a.band_low) == (24.0 - 22.0)  # gap preserved
@@ -120,7 +129,7 @@ def test_feedforward_jumps_band_center_to_target_plus_offset():
 
 def test_feedforward_bypasses_deadband():
     # error 0.2 is within deadband, but the target changed -> feedforward still fires.
-    a = decide(_inputs(house_average=21.0, target=21.2, last_target=21.0, learned_offset=0.0), CFG)
+    a = decide(_inputs(house_average=21.0, target=21.2, last_target=21.0, offset=0.0), CFG)
     assert a.set_band is True and a.reason == "feedforward"
 
 
@@ -140,7 +149,7 @@ def test_feedforward_refused_at_temp_bound_holds():
 
 def test_offset_learned_only_when_settled():
     # within deadband: K eases toward (band_center - house) = (21.5 - 20.8) = 0.7 at alpha 0.05.
-    a = decide(_inputs(house_average=20.8, target=21.0, band_low=20.0, band_high=23.0, learned_offset=0.0), CFG)
+    a = decide(_inputs(house_average=20.8, target=21.0, band_low=20.0, band_high=23.0, offset=0.0), CFG)
     assert a.reason == "within_deadband"
     assert a.new_offset == pytest.approx(0.05 * 0.7)
 
@@ -148,6 +157,121 @@ def test_offset_learned_only_when_settled():
 def test_offset_not_learned_on_trim():
     a = decide(_inputs(house_average=18.0, target=21.0), CFG)
     assert a.reason == "trim" and a.new_offset is None
+
+
+# --- heat/cool split: regime selection -------------------------------------
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        ("heating", "heat"),
+        ("preheating", "heat"),
+        ("defrosting", "heat"),
+        ("cooling", "cool"),
+        ("drying", "cool"),
+        ("idle", None),
+        ("fan", None),
+        ("off", None),
+        (None, None),
+    ],
+)
+def test_learn_regime_maps_hvac_action(action, expected):
+    # hvac_mode None so only the action is consulted (idle/fan/off/None → no decisive regime).
+    assert _learn_regime(_inputs(hvac_action=action, hvac_mode=None)) == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"), [("cool", "cool"), ("heat", "heat"), ("heat_cool", None), (None, None)]
+)
+def test_learn_regime_falls_back_to_hvac_mode_when_no_action(mode, expected):
+    # No decisive action (idle) → fall back to the set mode; ambiguous heat_cool/None → hold.
+    assert _learn_regime(_inputs(hvac_action="idle", hvac_mode=mode)) == expected
+
+
+def test_placement_regime_sticky_within_margin():
+    # Within ±regime_flip_margin (1.0) the regime holds the last one (no chatter)...
+    held_cool = _placement_regime(_inputs(last_placement_regime="cool"), error=0.8, config=CFG)
+    held_heat = _placement_regime(_inputs(last_placement_regime="heat"), error=-0.8, config=CFG)
+    assert held_cool == "cool" and held_heat == "heat"
+    # ...and only a decisive demand past the margin flips it.
+    assert _placement_regime(_inputs(last_placement_regime="heat"), error=-1.2, config=CFG) == "cool"
+    assert _placement_regime(_inputs(last_placement_regime="cool"), error=1.2, config=CFG) == "heat"
+
+
+def test_within_deadband_idle_does_not_learn():
+    # In deadband but the equipment isn't running a decisive regime (idle, heat_cool mode) → hold,
+    # learn nothing (rather than mis-attributing a sample).
+    a = decide(_inputs(house_average=21.0, target=21.0, hvac_action="idle", hvac_mode="heat_cool"), CFG)
+    assert a.reason == "within_deadband_idle"
+    assert a.new_offset is None
+
+
+def test_learning_routes_to_active_regime_only():
+    # Heating + settled → only the heat offset moves; the cool offset is left untouched.
+    a = decide(
+        _inputs(house_average=20.8, target=21.0, band_low=20.0, band_high=23.0,
+                cool_offset=-4.0, heat_offset=0.0, hvac_action="heating"),
+        CFG,
+    )
+    assert a.reason == "within_deadband"
+    assert a.new_offset_regime == "heat"
+    # EMA nudges heat from its OWN baseline 0.0 toward (band_center 21.5 − house 20.8) = 0.7.
+    assert a.new_offset == pytest.approx(0.0 + 0.05 * 0.7)
+
+
+def test_regime_flip_fires_feedforward_without_target_change():
+    # Settled cooling (last regime cool), then the house drops decisively below target → heating
+    # demand. No target change, but the placement regime flips → a feedforward jump to target+heat.
+    a = decide(
+        _inputs(house_average=18.0, target=21.0, band_low=20.0, band_high=23.0,
+                cool_offset=-4.0, heat_offset=-1.0, last_placement_regime="cool"),
+        CFG,
+    )
+    assert a.reason == "feedforward"
+    # Jumps to band_center = target + heat_offset = 21 + (−1) = 20, in one step.
+    assert (a.band_low + a.band_high) / 2.0 == pytest.approx(20.0)
+    assert a.placement_regime == "heat"
+
+
+def test_no_flip_feedforward_on_first_tick():
+    # last_placement_regime None (genuinely first tick) → the flip is suppressed; a decisive demand
+    # is handled by the normal trim, and the regime is still echoed so the gate arms next tick.
+    a = decide(
+        _inputs(house_average=18.0, target=21.0, last_placement_regime=None),
+        CFG,
+    )
+    assert a.reason == "trim"
+    assert a.placement_regime == "heat"  # echoed even though no flip-feedforward fired
+
+
+def test_overcool_steady_state_holds_cool_regime_not_heat():
+    # House settled at the humidity-overcooled point (19 = 21−2): nominal error is +2 (looks like a
+    # heating demand), but the regime keys on effective_target error (≈0) → it must HOLD cool, not
+    # flip to heat and command warming while the equipment is cooling for dehumidification.
+    a = decide(
+        _inputs(house_average=19.0, target=21.0, band_low=20.0, band_high=23.0,
+                humidity=70.0, cooling=True, last_placement_regime="cool"),
+        _HUMID_CFG,
+    )
+    assert a.placement_regime == "cool"
+    assert a.reason != "feedforward"  # no spurious heat-ward changeover jump
+
+
+def test_cooling_engages_before_two_degrees_over_target():
+    # The +2°F responsiveness bar: settled heating (band heat-placed), then the house warms. As soon
+    # as it crosses the flip margin (target+1.0, still < target+2), the regime flips to cool and the
+    # band jumps to target+cool_offset in ONE step — so cooling is commanded well before +2° of drift.
+    cfg = replace(CFG, temp_min=45.0, temp_max=95.0)  # °F equipment bounds
+    target, cool_offset = 70.0, -4.0
+    house = target + 1.2  # past the 1.0 flip margin, comfortably under the +2 bar
+    a = decide(
+        _inputs(house_average=house, target=target, band_low=68.0, band_high=72.0,
+                cool_offset=cool_offset, heat_offset=-1.0, last_placement_regime="heat"),
+        cfg,
+    )
+    assert house < target + 2.0  # the bar we must beat
+    assert a.reason == "feedforward"
+    assert (a.band_low + a.band_high) / 2.0 == pytest.approx(target + cool_offset)  # = 66, cooling hard
 
 
 # --- humidity overcool -----------------------------------------------------
@@ -160,14 +284,22 @@ _HUMID_CFG = replace(CFG, humidity_target=50.0, humidity_gain=0.1, humidity_max_
 
 def test_overcool_trims_down_when_cooling_and_humid():
     # Settled at target (error 0) but RH 70 while cooling -> effective target 21-2=19 -> trim down.
-    a = decide(_inputs(house_average=21.0, target=21.0, humidity=70.0, cooling=True), _HUMID_CFG)
+    a = decide(
+        _inputs(house_average=21.0, target=21.0, humidity=70.0, cooling=True,
+                last_placement_regime="cool"),
+        _HUMID_CFG,
+    )
     assert a.set_band is True and a.reason == "trim"
     assert a.band_low < 20.0 and a.band_high < 23.0
 
 
 def test_overcool_offset_capped():
     # RH 200 over -> 0.1*150=15° raw, capped to 2.0: effective target 19, error -2.0 -> trim caps at max_step.
-    a = decide(_inputs(house_average=21.0, target=21.0, humidity=200.0, cooling=True), _HUMID_CFG)
+    a = decide(
+        _inputs(house_average=21.0, target=21.0, humidity=200.0, cooling=True,
+                last_placement_regime="cool"),
+        _HUMID_CFG,
+    )
     assert a.set_band is True
     assert (20.0 - a.band_low) == _HUMID_CFG.max_step  # error is -2.0, trim clamps to max_step down
 
@@ -191,8 +323,8 @@ def test_no_overcool_when_humidity_at_or_below_target():
 def test_overcool_does_not_perturb_feedforward():
     # Target change fires feedforward keyed on the NOMINAL target, ignoring the humidity overcool.
     a = decide(
-        _inputs(target=24.0, last_target=21.0, learned_offset=2.0, band_low=22.0, band_high=24.0,
-                humidity=70.0, cooling=True),
+        _inputs(target=24.0, last_target=21.0, offset=2.0, band_low=22.0, band_high=24.0,
+                humidity=70.0, cooling=True, last_placement_regime="cool"),
         _HUMID_CFG,
     )
     assert a.reason == "feedforward"
@@ -204,11 +336,45 @@ def test_overcool_learns_at_the_overcooled_steady_state():
     # learning during overcool is fine (the EMA tracks band_center - house regardless of target).
     a = decide(
         _inputs(house_average=19.0, target=21.0, band_low=20.0, band_high=23.0,
-                learned_offset=0.0, humidity=70.0, cooling=True),
+                offset=0.0, humidity=70.0, cooling=True, last_placement_regime="cool"),
         _HUMID_CFG,
     )
     assert a.reason == "within_deadband"
     assert a.new_offset == pytest.approx(0.05 * (21.5 - 19.0))
+
+
+def test_overcool_suppressed_in_heat_regime_no_phantom_cool_flip():
+    # The bug this guards: a humid heat-up with the house still BELOW target. Unconditional overcool
+    # would drag effective_target below the house and flip placement to cool, commanding cooling before
+    # the house reaches target. Gated on last_placement_regime=="cool", overcool stays off while heating
+    # so the regime holds heat and no changeover feedforward fires.
+    a = decide(
+        _inputs(house_average=20.3, target=21.0, band_low=19.5, band_high=22.5,
+                cool_offset=-4.0, heat_offset=-1.0, humidity=68.0, cooling=True,
+                last_placement_regime="heat"),
+        _HUMID_CFG,
+    )
+    assert a.placement_regime == "heat"  # held heat — no phantom cool flip
+    assert a.reason != "feedforward"  # no changeover jump to a cool band
+
+
+def test_cooling_engages_within_two_degrees_even_when_humid():
+    # The overcool gate must not cost responsiveness: when the house genuinely warms past target while
+    # humid (prior regime heat), cool entry rides NOMINAL demand — overcool is still suppressed on the
+    # flip tick (last regime heat) so the band jumps straight to target+cool_offset, engaging cooling
+    # within the +2°F bar. Overcool only deepens cooling on the following tick (regime now cool).
+    cfg = replace(_HUMID_CFG, temp_min=45.0, temp_max=95.0)
+    target, cool_offset = 70.0, -4.0
+    house = target + 1.2  # past the flip margin, under the +2 bar
+    a = decide(
+        _inputs(house_average=house, target=target, band_low=68.0, band_high=72.0,
+                cool_offset=cool_offset, heat_offset=-1.0, humidity=75.0, cooling=True,
+                last_placement_regime="heat"),
+        cfg,
+    )
+    assert house < target + 2.0
+    assert a.reason == "feedforward"
+    assert (a.band_low + a.band_high) / 2.0 == pytest.approx(target + cool_offset)  # 66, cooling hard
 
 
 # --- closed-loop simulation (the merge-blocking tests) ---------------------
@@ -226,7 +392,11 @@ def _simulate(target_per_tick: list[float], use_feedforward: bool, start_house: 
     """Simulate the coordinator loop tick by tick (persisting band, offset, last_target)."""
     house = start_house
     band_low, band_high = 20.0, 23.0
-    learned_offset = 0.0
+    # House starts below target and heats up toward it, so the equipment is heating throughout — the
+    # heat offset is the one that learns. (Single-regime convergence sim; the changeover sim lives in
+    # test_windup_regression.py.) Both offsets tracked so the split routing is exercised here too.
+    cool_offset = heat_offset = 0.0
+    last_placement_regime: str | None = None
     last_change = 0.0
     last_target = target_per_tick[0]  # matched at start: no spurious feedforward on tick 0
     t = 0.0
@@ -242,8 +412,11 @@ def _simulate(target_per_tick: list[float], use_feedforward: bool, start_house: 
                 band_high=band_high,
                 now_ts=t,
                 last_change_ts=last_change,
-                learned_offset=learned_offset,
+                cool_offset=cool_offset,
+                heat_offset=heat_offset,
                 last_target=last_target if use_feedforward else target,
+                hvac_action="heating",
+                last_placement_regime=last_placement_regime,
             ),
             _CONV_CFG,
         )
@@ -252,11 +425,16 @@ def _simulate(target_per_tick: list[float], use_feedforward: bool, start_house: 
             band_low, band_high = action.band_low, action.band_high
             last_change = t
         if action.new_offset is not None:
-            learned_offset = action.new_offset
+            if action.new_offset_regime == "heat":
+                heat_offset = action.new_offset
+            else:
+                cool_offset = action.new_offset
+        if action.placement_regime is not None:
+            last_placement_regime = action.placement_regime
         last_target = target  # coordinator advances last_target each tick
         band_center = (band_low + band_high) / 2.0
         house += _PLANT_GAIN * ((band_center - _BIAS) - house)
-        out.append(_Rec(target, house, band_center, learned_offset, action.reason))
+        out.append(_Rec(target, house, band_center, heat_offset, action.reason))
     return out
 
 

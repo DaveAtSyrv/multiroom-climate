@@ -22,12 +22,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from homeassistant.components.climate import (
     ATTR_CURRENT_TEMPERATURE,
     ATTR_FAN_MODE,
     ATTR_FAN_MODES,
+    ATTR_HVAC_ACTION,
     ATTR_MAX_TEMP,
     ATTR_MIN_TEMP,
     ATTR_TARGET_TEMP_HIGH,
@@ -131,7 +132,9 @@ class _PersistedState(TypedDict):
     """The coordinator's persisted control state (one Store payload). Typed so a load narrows each
     field to its real type instead of the heterogeneous ``float | bool | None`` union."""
 
-    learned_offset: float
+    cool_offset: float
+    heat_offset: float
+    last_placement_regime: str | None
     target: float | None
     last_target: float | None
     last_change_ts: float
@@ -224,6 +227,9 @@ class _WrappedReading:
     # The thermostat's *own* sensor reading; feeds the anti-windup / offset-learning saturation gate
     # (a sensor far outside the band = equipment flat-out). None when absent — guard degrades off.
     current_temperature: float | None = None
+    # What the equipment is *actually doing* now (HA hvac_action: heating/cooling/drying/idle/...), or
+    # None if the wrapped climate doesn't report it. Selects which learned offset updates each tick.
+    hvac_action: str | None = None
     # Whether the entity is in the state machine at all. False *only* when it's missing entirely
     # (removed/renamed/never-loaded); a present-but-unavailable entity is still exists=True with
     # hvac_mode=None. Distinct from ``present`` and consumed by the missing-thermostat repair.
@@ -317,8 +323,9 @@ class CoordinatorData:
     """The regulated view computed each tick: the house average + the wrapped thermostat's state.
 
     ``band_low``/``band_high`` are the wrapped thermostat's current AUTO setpoints — the band the
-    controller slides. ``target``/``learned_offset``/``proposed`` are the controller's decision this
-    tick (the band in ``proposed`` is written to the thermostat when ``enabled``, else just recorded).
+    controller slides. ``target``/``cool_offset``/``heat_offset``/``proposed`` are the controller's
+    decision this tick (the band in ``proposed`` is written to the thermostat when ``enabled``, else
+    just recorded).
     ``status`` is the one-word reason for this tick (``decide()``'s reason, or why it didn't run);
     ``fresh_sensors``/``total_sensors`` expose sensor degradation; ``thermostat_present`` drives
     entity availability; ``enabled`` is the master-switch state.
@@ -335,7 +342,8 @@ class CoordinatorData:
     target_temp_step: float | None  # wrapped thermostat's step (None = HA default) for the house-target dial
     target: float | None
     scheduled: float | None  # day/night setpoint for now (None = no schedule); drives the target at transitions
-    learned_offset: float
+    cool_offset: float
+    heat_offset: float
     humidity: float | None  # the RH decide() saw this tick (None = no sensor/stale → overcool off)
     spread: float | None  # room-to-room max−min (None = <2 fresh sensors); drives fan-circulate
     fan_proposed: FanAction  # the fan-circulate decision
@@ -379,7 +387,13 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._store = build_store(hass, entry)
         self._target: float | None = None
         self._last_target: float | None = None
-        self._learned_offset: float = 0.0
+        # Two learned offsets, selected by HVAC regime (the wrapped thermostat's own sensor reads a
+        # different bias relative to the band when heating vs cooling — see controller docstring).
+        self._cool_offset: float = 0.0
+        self._heat_offset: float = 0.0
+        # The demand regime last used for band placement; persisted so a restart restores it rather
+        # than defaulting to "cool" and jumping the band cold (which would command cooling in winter).
+        self._last_placement_regime: str | None = None
         self._last_change_ts: float = 0.0
         self._last_scheduled: float | None = None
         # Whether the user explicitly set the target (via async_set_target) vs auto-seeded. An
@@ -410,11 +424,19 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         Restoring ``target`` means we don't re-seed it to the current house average on restart.
         Restoring ``last_target`` (which a user target change deliberately leaves behind, so a
         feedforward can be pending) keeps the feedforward gate sound across the restart.
+
+        Offsets read defensively: an older single-``learned_offset`` payload migrates into
+        ``cool_offset`` (it was learned while cooling), with ``heat_offset`` left neutral until the
+        first heating cycle teaches it. New writes only emit the split keys, so the old one ages out.
         """
         stored = await self._store.async_load()
         if not stored:
             return
-        self._learned_offset = stored.get("learned_offset", 0.0)
+        # The legacy single-offset key isn't in the current TypedDict; read it through a plain mapping.
+        legacy = cast("Mapping[str, Any]", stored)
+        self._cool_offset = stored.get("cool_offset", legacy.get("learned_offset", 0.0))
+        self._heat_offset = stored.get("heat_offset", 0.0)
+        self._last_placement_regime = stored.get("last_placement_regime")
         self._target = stored.get("target")
         self._last_target = stored.get("last_target")
         self._last_change_ts = stored.get("last_change_ts", 0.0)
@@ -424,7 +446,9 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
     @callback
     def _persisted_state(self) -> _PersistedState:
         return {
-            "learned_offset": self._learned_offset,
+            "cool_offset": self._cool_offset,
+            "heat_offset": self._heat_offset,
+            "last_placement_regime": self._last_placement_regime,
             "target": self._target,
             "last_target": self._last_target,
             "last_change_ts": self._last_change_ts,
@@ -465,18 +489,30 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
         await self.async_request_refresh()
 
     @property
-    def learned_offset(self) -> float:
-        """The current learned band-to-house offset K (the number entity reads this)."""
-        return self._learned_offset
+    def cool_offset(self) -> float:
+        """The current learned *cooling* band-to-house offset (the cool number entity reads this)."""
+        return self._cool_offset
 
-    async def async_set_learned_offset(self, offset: float) -> None:
-        """Override the learned offset K (the number entity calls this).
+    @property
+    def heat_offset(self) -> float:
+        """The current learned *heating* band-to-house offset (the heat number entity reads this)."""
+        return self._heat_offset
 
-        K is normally self-tuning, but exposing a manual override lets the user reset it to 0
-        (relearn from scratch) or set a known-good value — recovering from a bad learned state
+    async def async_set_cool_offset(self, offset: float) -> None:
+        """Override the learned cooling offset (the cool number entity calls this). See
+        ``async_set_heat_offset`` for the rationale; persisted immediately and applied next tick."""
+        self._cool_offset = offset
+        self._save_state()
+        await self.async_request_refresh()
+
+    async def async_set_heat_offset(self, offset: float) -> None:
+        """Override the learned heating offset (the heat number entity calls this).
+
+        The offsets are normally self-tuning, but exposing a manual override lets the user reset one to
+        0 (relearn from scratch) or set a known-good value — recovering from a bad learned state
         without deleting and re-adding the integration. Persisted immediately and applied next tick.
         """
-        self._learned_offset = offset
+        self._heat_offset = offset
         self._save_state()
         await self.async_request_refresh()
 
@@ -554,6 +590,7 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             target_temp_step=convert(wrapped.attributes.get(ATTR_TARGET_TEMP_STEP), float),
             fan_mode=wrapped.attributes.get(ATTR_FAN_MODE),
             fan_modes=tuple(wrapped.attributes.get(ATTR_FAN_MODES, [])),
+            hvac_action=wrapped.attributes.get(ATTR_HVAC_ACTION),
         )
 
     def _evaluate(
@@ -628,7 +665,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 band_high=band_high,
                 now_ts=now_ts,
                 last_change_ts=self._last_change_ts,
-                learned_offset=self._learned_offset,
+                cool_offset=self._cool_offset,
+                heat_offset=self._heat_offset,
                 last_target=self._last_target,
                 # Humidity overcool: mode-gated cooling flag + the RH read (None when no sensor is
                 # configured/fresh, which simply disables overcool). decide() ignores both on the
@@ -638,11 +676,21 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 # The thermostat's own sensor — lets decide() detect equipment saturation and suppress
                 # integral windup / freeze offset learning while the band can't be tracked.
                 thermostat_temperature=wrapped.current_temperature,
+                # Regime selection: hvac_action picks which offset learns (hvac_mode is the fallback);
+                # last_placement_regime arms the changeover feedforward. StrEnums pass through as str.
+                hvac_action=wrapped.hvac_action,
+                hvac_mode=wrapped.hvac_mode,
+                last_placement_regime=self._last_placement_regime,
             ),
             config,
         )
         if action.new_offset is not None:
-            self._learned_offset = action.new_offset
+            if action.new_offset_regime == "heat":
+                self._heat_offset = action.new_offset
+            else:
+                self._cool_offset = action.new_offset
+        if action.placement_regime is not None:
+            self._last_placement_regime = action.placement_regime
         self._last_target = self._target
         return action, now_ts
 
@@ -787,7 +835,8 @@ class MultiroomClimateCoordinator(DataUpdateCoordinator[CoordinatorData]):
             target_temp_step=wrapped.target_temp_step,
             target=self._target,
             scheduled=scheduled,
-            learned_offset=self._learned_offset,
+            cool_offset=self._cool_offset,
+            heat_offset=self._heat_offset,
             humidity=humidity,
             spread=room_spread,
             fan_proposed=fan_proposed,

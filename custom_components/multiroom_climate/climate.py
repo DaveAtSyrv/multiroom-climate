@@ -141,7 +141,8 @@ class MultiroomClimateEntity(
             "shadow_sensors_fresh": data.fresh_sensors,
             "shadow_sensors_total": data.total_sensors,
             "shadow_target": data.target,
-            "shadow_learned_offset": round(data.learned_offset, 2),
+            "shadow_cool_offset": round(data.cool_offset, 2),
+            "shadow_heat_offset": round(data.heat_offset, 2),
             "shadow_humidity": data.humidity,  # RH decide() saw (None = no sensor/stale → overcool off)
             "shadow_spread": data.spread,  # room max−min driving fan-circulate (None = <2 fresh)
             "shadow_fan_status": data.fan_proposed.reason,

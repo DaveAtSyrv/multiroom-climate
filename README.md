@@ -8,8 +8,9 @@
 
 A custom Home Assistant integration that adds a smart thermostat which regulates your home to an
 **average of the rooms you choose** instead of the single (often warm) thermostat sensor.
-It automatically learns the bias between the thermostat's own sensor and your house average — so the
-manual "set it to 67 to hold the house at 70" trick becomes automatic and self-adjusting.
+It automatically learns the bias between the thermostat's own sensor and your house average —
+**separately for heating and cooling** — so the manual "set it to 67 to hold the house at 70" trick
+becomes automatic and self-adjusting, and the right correction is applied as the system changes over.
 
 I built this for my own house, where the Daikin Skyport sits in the warmest room and the rest of the
 place always ran a couple degrees off. It's a personal project I'm sharing in case you have the same
@@ -22,10 +23,12 @@ problem — independent and community-built, not a product.
 ## What it does
 
 - Targets a **house-average temperature**, not the thermostat's own sensor.
-- **Auto-learns the thermostat-sensor bias** and compensates continuously.
+- **Auto-learns the thermostat-sensor bias — separately for heating and cooling** — and compensates
+  continuously (the sensor reads a different offset in each mode, so cooling often needs a larger
+  correction than heating).
 - **Feedforward + proportional trim** control: jumps fast on changes, holds gently at steady state.
 - **Automatic heat/cool changeover** by sliding the thermostat's AUTO band (the equipment keeps its
-  own compressor protection).
+  own compressor protection), applying the correct learned offset the moment the mode flips.
 - **Day/night temperature setback** with a fixed optimal-start lead so the house is at temp *by* the
   scheduled time.
 - **Humidity bias** (overcool slightly when humid in cooling season).
@@ -39,7 +42,8 @@ problem — independent and community-built, not a product.
   the rest of the house runs off-target. Hold the average of the rooms you actually use instead.
 - **Automating the "set it to 67 to hold 70" workaround.** If you already nudge the thermostat to
   compensate for its own sensor, this learns that bias and applies it for you, and keeps adjusting as
-  conditions change.
+  conditions change — learning the heating and cooling nudges independently so a changeover doesn't
+  start from the wrong correction.
 - **Night setback without a smart-thermostat schedule.** Set a lower night temperature and a morning
   target; the optimal-start lead brings the house back to comfortable *by* the time you want it.
 - **Comfort in humid weather.** When cooling, it overcools by a small, capped amount while humidity is
@@ -129,7 +133,8 @@ a manual hold until then.
 - **Set the target** on the climate entity to the house temperature you want.
 - **Turn the switch off** at any time to instantly hand full control back to the thermostat.
 - Diagnostic `shadow_*` attributes on the climate entity expose what the controller is doing (target,
-  learned offset, sensor freshness, proposed band, scheduled setpoint) — handy while tuning.
+  learned cooling/heating offsets, sensor freshness, proposed band, scheduled setpoint) — handy while
+  tuning.
 
 ## Examples
 
@@ -279,7 +284,8 @@ v1 keeps the control model deliberately simple. Current limitations (most lifted
    Assistant.
 
 Deleting an entry removes its climate and switch entities and the device, and **deletes the
-integration's stored control state** (the learned sensor-bias offset and the held target). The wrapped
+integration's stored control state** (the learned cooling/heating sensor-bias offsets and the held
+target). The wrapped
 thermostat itself is left untouched and returns to manual control — its current AUTO band is kept as-is
 (already bias-compensated for current conditions), so there's no jump on handback.
 

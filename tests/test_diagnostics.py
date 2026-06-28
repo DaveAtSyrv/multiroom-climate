@@ -36,6 +36,7 @@ async def test_diagnostics_dump(hass: HomeAssistant, enable_custom_integrations)
             "target_temp_high": 69.0,
             "min_temp": 45.0,
             "max_temp": 95.0,
+            "hvac_action": "cooling",  # so the settled tick learns (status within_deadband)
         },
     )
     entry = MockConfigEntry(
@@ -48,7 +49,8 @@ async def test_diagnostics_dump(hass: HomeAssistant, enable_custom_integrations)
     result = await async_get_config_entry_diagnostics(hass, entry)
 
     assert result["entry"]["data"][CONF_CLIMATE_ENTITY] == "climate.daikin"
-    assert "learned_offset" in result["control_state"]
+    assert "cool_offset" in result["control_state"]
+    assert "heat_offset" in result["control_state"]
     # The last computed tick: both rooms at 70 vs band center 68 → settled within deadband.
     assert result["last_tick"]["status"] == "within_deadband"
     assert result["last_tick"]["thermostat_present"] is True

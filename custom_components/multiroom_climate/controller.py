@@ -17,16 +17,24 @@ Do **not** "simplify" this into a proportional *position* controller
 (``band = target ± kp * error``): that reintroduces a permanent steady-state offset and defeats the
 whole purpose of the integration. The accumulation is the point.
 
-Learned offset + feedforward.
-The slow trim above is for *holding*. To move fast on a target change we learn the **band-to-house
-offset** ``K = band_center - house_average`` at steady state (slow EMA), and on any target change we
-*jump* the band so ``band_center = target + K`` — a feedforward step that recovers in one move
-instead of crawling there via trim. ``K`` is learned relative to the band (what we actuate), not to
-the thermostat's own sensor, so it absorbs both the sensor bias and the band-center-vs-regulation
-gap in one number and needs no extra sensor. Learning happens **only when settled** (``|error| <=
-deadband``) so the house is never sampled mid-recovery. ``decide()`` is pure, so it *returns* the new
-offset (``Action.new_offset``); the caller persists it. ``new_offset is None`` means "leave K
-unchanged" — so a missed return path degrades to "didn't learn", never "wiped K".
+Learned offset + feedforward — **split by regime (heat vs cool).**
+The slow trim above is for *holding*. To move fast we learn the **band-to-house offset** ``K =
+band_center - house_average`` at steady state (slow EMA) and *jump* the band so ``band_center =
+target + K`` — a feedforward step that recovers in one move instead of crawling there via trim. ``K``
+is learned relative to the band (what we actuate), not to the thermostat's own sensor, so it absorbs
+both the sensor bias and the band-center-vs-regulation gap in one number and needs no extra sensor.
+
+``K`` is **regime-dependent**: the equipment regulates to a different band edge when heating
+(``band_low``) vs cooling (``band_high``), so the band-center-to-house offset differs by roughly the
+band gap. We therefore keep **two** learned offsets — ``cool_offset`` and ``heat_offset`` — and:
+- **place the band** with the offset for the active *demand* regime (a sticky deadband hysteresis on
+  ``error``), jumping on a target change *or* a regime flip (heat↔cool changeover);
+- **learn** only the offset for the regime the equipment is *actually* running (``hvac_action``, with
+  an ``hvac_mode`` fallback), and only when settled (``|error| <= deadband``) so the house is never
+  sampled mid-recovery.
+``decide()`` is pure, so it *returns* the new offset (``Action.new_offset`` + ``new_offset_regime``)
+and the active ``placement_regime``; the caller persists them. ``new_offset is None`` means "leave
+the offsets unchanged" — so a missed return path degrades to "didn't learn", never "wiped K".
 
 Scope boundary: this engine answers "given that we are controlling, what band next?" It deliberately
 does **not** own the master enable / kill switch. Whether to call ``decide()`` at all, and the
@@ -38,7 +46,10 @@ same as the coordinator's handback.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Literal
+
+Regime = Literal["heat", "cool"]
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -53,6 +64,13 @@ class ControllerConfig:
     deadband: float = 0.5
     """No band change while ``abs(error) <= deadband`` (avoids hunting); also the "settled" gate
     for offset learning."""
+
+    regime_flip_margin: float = 1.0
+    """How far past target (in the demand direction) the house must sit before the *placement regime*
+    flips heat↔cool and fires a changeover feedforward. Deliberately larger than ``deadband`` and
+    smaller than the ~2° responsiveness bar: the deadband answers "settled enough to learn", this
+    answers "demand has genuinely reversed" — so a transient convergence overshoot can't flip the
+    regime and jump the band, while a real seasonal changeover still engages cooling well under +2°."""
 
     kp: float = 0.3
     """Integral gain: the band shift added per unit of error, per tick."""
@@ -137,8 +155,12 @@ class ControllerInputs:
     last_change_ts: float
     """When the controller last changed the band, epoch seconds."""
 
-    learned_offset: float
-    """Persisted K = band_center - house_average at steady state (caller persists Action.new_offset)."""
+    cool_offset: float
+    """Persisted cooling K = band_center - house_average at a cooling steady state (caller persists
+    Action.new_offset under new_offset_regime="cool")."""
+
+    heat_offset: float
+    """Persisted heating K, the heating counterpart of ``cool_offset``."""
 
     last_target: float | None
     """The target the caller last acted on; ``target != last_target`` triggers the feedforward jump.
@@ -160,6 +182,21 @@ class ControllerInputs:
     and not reaching setpoint). ``None`` disables the anti-windup / learning guards — a graceful
     fallback for thermostats that don't expose their own temperature."""
 
+    hvac_action: str | None = None
+    """What the equipment is *actually doing now* (HA ``hvac_action``: heating/cooling/drying/idle/...),
+    or ``None`` if the wrapped climate doesn't report it. Selects which offset *learns*. Typed ``str``
+    (not the HA enum) to keep this engine HA-free; HA's ``HVACAction`` is a StrEnum so it compares equal."""
+
+    hvac_mode: str | None = None
+    """The wrapped thermostat's set mode (HA ``hvac_mode``: cool/heat/heat_cool/...). Learning fallback
+    when ``hvac_action`` is absent. Typed ``str`` for the same HA-free reason as ``hvac_action``."""
+
+    last_placement_regime: str | None = None
+    """The placement regime the caller last acted on; a change vs the freshly computed regime triggers a
+    feedforward jump at a heat↔cool changeover (mirrors ``last_target``). ``None`` before the caller has
+    ever stored one — which suppresses the flip-jump for that first tick (initial placement is left to
+    the normal target-change feedforward + trim)."""
+
 
 @dataclass(frozen=True)
 class Action:
@@ -171,6 +208,12 @@ class Action:
     notify: str | None = None
     new_offset: float | None = None
     """Updated learned offset to persist, or None = leave the persisted value unchanged."""
+    new_offset_regime: Regime | None = None
+    """Which offset ``new_offset`` belongs to (``"cool"``/``"heat"``). ``None`` when not learning."""
+    placement_regime: Regime | None = None
+    """The demand regime this tick used for band placement, echoed on every non-failsafe return so the
+    caller can persist it as next tick's ``last_placement_regime`` (this is what arms the flip gate).
+    ``None`` only on the failsafe/unavailable path, where the caller holds the prior value."""
     reason: str = ""
 
 
@@ -204,8 +247,17 @@ def _overcool(inputs: ControllerInputs, config: ControllerConfig) -> float:
     Only when cooling (mode-gated, not temperature-gated — see ``ControllerInputs.cooling``) and a
     fresh humidity reading sits above ``humidity_target``. The offset is ``humidity_gain`` per point
     of excess RH, capped at ``humidity_max_overcool``.
+
+    Also gated on the *active demand regime* already being cool (``last_placement_regime``). Overcool
+    feeds ``effective_target``, which now drives the discrete placement-regime flip + changeover
+    feedforward — so an unconditional overcool could drag ``effective_target`` below a house that is
+    still *below* the user's target during a humid heat-up and manufacture a phantom heat→cool flip,
+    commanding cooling before the house ever reaches target. Restricting it to an established cool
+    regime lets overcool *deepen* cooling (its purpose) but never *create* a changeover. Genuine cool
+    entry happens on nominal demand (house warms past target) without overcool's help; overcool then
+    engages on the next tick once the regime reads cool — a one-tick lag with no UX cost.
     """
-    if inputs.humidity is None or not inputs.cooling:
+    if inputs.humidity is None or not inputs.cooling or inputs.last_placement_regime != "cool":
         return 0.0
     excess = max(0.0, inputs.humidity - config.humidity_target)
     return min(config.humidity_max_overcool, config.humidity_gain * excess)
@@ -229,6 +281,59 @@ def _demand_saturation(inputs: ControllerInputs, config: ControllerConfig) -> in
     return 0
 
 
+# hvac_action / hvac_mode values that map to each regime (lower-cased; HA StrEnums compare as str).
+_HEAT_ACTIONS = frozenset({"heating", "preheating", "defrosting"})
+_COOL_ACTIONS = frozenset({"cooling", "drying"})
+
+
+def _learn_regime(inputs: ControllerInputs) -> Regime | None:
+    """Which offset to *learn* this tick — the regime the equipment is actually running.
+
+    Keyed on ``hvac_action`` (ground truth for what the plant is doing). When the wrapped climate
+    doesn't report an action (idle/fan/off or simply absent), fall back to ``hvac_mode`` so a
+    single-mode thermostat still learns; ``heat_cool`` with no action stays ambiguous → ``None`` (hold,
+    don't learn) rather than guessing. Returning ``None`` never *stops* control, only learning.
+    """
+    action = inputs.hvac_action
+    if action in _HEAT_ACTIONS:
+        return "heat"
+    if action in _COOL_ACTIONS:
+        return "cool"
+    # No decisive action — fall back to the set mode for single-mode thermostats.
+    mode = inputs.hvac_mode
+    if mode == "cool":
+        return "cool"
+    if mode == "heat":
+        return "heat"
+    return None
+
+
+def _placement_regime(inputs: ControllerInputs, error: float, config: ControllerConfig) -> Regime:
+    """Which offset to *place the band* with — the active demand direction, sticky with
+    ``regime_flip_margin`` hysteresis so it can't chatter. Flips to ``"cool"`` only when
+    ``error < -regime_flip_margin`` (house decisively warmer than the regulation point) and to
+    ``"heat"`` only when ``error > +regime_flip_margin``; within the margin it holds the last regime.
+    Always defined (defaults ``"cool"`` on the very first tick / a tie).
+
+    The margin (wider than ``deadband``) keeps a transient convergence overshoot from flipping the
+    regime and firing a changeover feedforward — only a genuine demand reversal does. Keyed on the
+    *same* ``error`` decide() computes (against ``effective_target``), so at the humidity-overcooled
+    steady state — house settled a touch below the user's target but still actively cooling —
+    ``error ≈ 0`` holds the cool regime instead of flipping to heat.
+    """
+    if error < -config.regime_flip_margin:
+        return "cool"
+    if error > config.regime_flip_margin:
+        return "heat"
+    # Hold the last regime within the margin; default cool on the first tick / a tie / a stray value.
+    return "heat" if inputs.last_placement_regime == "heat" else "cool"
+
+
+def _placement_offset(inputs: ControllerInputs, regime: Regime) -> float:
+    """The learned offset for ``regime`` — used to place the band (``band_center = target + offset``)."""
+    return inputs.cool_offset if regime == "cool" else inputs.heat_offset
+
+
 def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     """Return the next :class:`Action` for one control tick (pure; see module docstring)."""
     # Failsafe: never drive HVAC off a missing or stale reading (and never learn from one).
@@ -247,30 +352,53 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     error = effective_target - inputs.house_average
     band_center = (inputs.band_low + inputs.band_high) / 2.0
 
-    # FEEDFORWARD: on a target change, jump the band so band_center = target + learned_offset,
-    # bypassing the deadband + rate-limit gates for a fast recovery. Uses the established
-    # (pre-update) offset; we never learn on this transient tick.
-    if inputs.target != inputs.last_target:
-        shift = (inputs.target + inputs.learned_offset) - band_center
-        return _shift_band(inputs, config, shift, "feedforward")
+    # The active demand regime, computed once and echoed on every (non-failsafe) return so the caller
+    # can persist it as next tick's last_placement_regime — that's what arms the changeover flip gate.
+    regime = _placement_regime(inputs, error, config)
+
+    def _decided(action: Action) -> Action:
+        """Stamp the regime onto an Action (incl. ones built inside _shift_band, which is frozen)."""
+        return replace(action, placement_regime=regime)
+
+    # FEEDFORWARD: jump the band so band_center = target + offset(regime), bypassing the deadband +
+    # rate-limit gates for a fast recovery. Fires on a target change OR a placement-regime flip (a
+    # heat↔cool changeover, where the band must jump to the new regime's offset, not crawl there via
+    # trim). The is-not-None guard suppresses a spurious jump on the very first tick (no prior regime
+    # to flip from); the regime is still stamped + persisted that tick, arming the gate for next time.
+    # Uses the established (pre-update) offset; we never learn on this transient tick.
+    regime_flip = inputs.last_placement_regime is not None and regime != inputs.last_placement_regime
+    if inputs.target != inputs.last_target or regime_flip:
+        shift = (inputs.target + _placement_offset(inputs, regime)) - band_center
+        return _decided(_shift_band(inputs, config, shift, "feedforward"))
 
     if abs(error) <= config.deadband:
-        # Settled at target — the ONLY place we learn. Nudge K toward (band_center - house_average)
-        # with a slow EMA. Gating on the deadband means the house is never sampled mid-recovery; the
-        # extra saturation gate means we also never sample while the band is still wound away from
-        # steady state (a saturated plant), which would corrupt K (see DESIGN_offset_windup.md).
-        # Saturation in *either* direction means the in-deadband band isn't a true steady state, so
-        # this gate is non-directional (`!= 0`) — unlike the anti-windup trim gate below, which only
-        # blocks the *worsening* step. A distinct reason surfaces "holding but not learning".
+        # Settled at target — the ONLY place we learn. Nudge the *active regime's* offset toward
+        # (band_center - house_average) with a slow EMA (the baseline is that regime's own current
+        # value, so heat and cool don't drag each other). Gating on the deadband means the house is
+        # never sampled mid-recovery; the extra saturation gate means we also never sample while the
+        # band is still wound away from steady state (a saturated plant), which would corrupt K (see
+        # DESIGN_offset_windup.md). Saturation in *either* direction means the in-deadband band isn't a
+        # true steady state, so this gate is non-directional (`!= 0`) — unlike the anti-windup trim
+        # gate below, which only blocks the *worsening* step. Distinct reasons surface why we held.
         if _demand_saturation(inputs, config) != 0:
-            return Action(set_band=False, reason="within_deadband_saturated")
-        new_offset = inputs.learned_offset + config.offset_alpha * (
-            (band_center - inputs.house_average) - inputs.learned_offset
+            return _decided(Action(set_band=False, reason="within_deadband_saturated"))
+        learn_regime = _learn_regime(inputs)
+        if learn_regime is None:
+            # No decisive regime (idle/fan with no set mode) — hold, don't attribute a sample anywhere.
+            return _decided(Action(set_band=False, reason="within_deadband_idle"))
+        base = _placement_offset(inputs, learn_regime)
+        new_offset = base + config.offset_alpha * ((band_center - inputs.house_average) - base)
+        return _decided(
+            Action(
+                set_band=False,
+                reason="within_deadband",
+                new_offset=new_offset,
+                new_offset_regime=learn_regime,
+            )
         )
-        return Action(set_band=False, reason="within_deadband", new_offset=new_offset)
 
     if inputs.now_ts - inputs.last_change_ts < config.min_period_s:
-        return Action(set_band=False, reason="rate_limited")
+        return _decided(Action(set_band=False, reason="rate_limited"))
 
     # Integral trim: ADD kp*error onto the current band (not an absolute setpoint — see module doc).
     desired_step = _clamp(config.kp * error, -config.max_step, config.max_step)
@@ -279,8 +407,8 @@ def decide(inputs: ControllerInputs, config: ControllerConfig) -> Action:
     # (the root of the offset-corruption bug). A step that *relieves* saturation is always allowed.
     saturation = _demand_saturation(inputs, config)
     if (saturation < 0 and desired_step < 0) or (saturation > 0 and desired_step > 0):
-        return Action(set_band=False, reason="windup_blocked")
-    return _shift_band(inputs, config, desired_step, "trim")
+        return _decided(Action(set_band=False, reason="windup_blocked"))
+    return _decided(_shift_band(inputs, config, desired_step, "trim"))
 
 
 @dataclass(frozen=True)

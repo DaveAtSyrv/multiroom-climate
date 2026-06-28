@@ -27,7 +27,8 @@ calls, so it's fully unit-testable and transport-agnostic — the same logic ser
 ## 3. v1 scope (locked)
 
 - **House-average** targeting (`current_temperature` = average of chosen sensors).
-- **Auto-learned thermostat-bias offset** (the "67 to hold 70" fix), continuously updated.
+- **Auto-learned thermostat-bias offsets** (the "67 to hold 70" fix), continuously updated — separate
+  cooling and heating offsets, each learned and applied for its own mode.
 - **Feedforward jump** on any change + **proportional** step when far + **slow trim** when close.
 - **Automatic heat/cool changeover** via band-shift in AUTO (equipment owns compressor protection).
 - **Day/night temperature setback** — whole-house target temp switches day↔night. *No per-room
@@ -53,13 +54,20 @@ dehumidify-demand control, away/vacation modes (revisit post-v1).
 Daikin stays in **AUTO** (low=heat setpoint, high=cool setpoint). We slide the band; the thermostat
 decides heat vs cool.
 
-1. **Learned offset:** `K = band_center - house_average`, slow EMA, updated **only when settled**
-   (`|error| <= deadband`, so the house is never sampled mid-recovery). Learned relative to the band
-   we actuate (not the thermostat's own sensor) — one signed number that absorbs both the sensor
-   bias and the band-center-vs-regulation gap, needing no extra sensor.
-2. **Feedforward jump on change** (target change or day↔night transition): jump the band so
-   `band_center = target + K`, bypassing the deadband + rate-limit gates. Signed `K` handles both
-   heating and cooling. (Pure `decide()` returns the updated `K`; the caller persists it.)
+1. **Learned offsets (per regime):** `K = band_center - house_average`, slow EMA, updated **only when
+   settled** (`|error| <= deadband`, so the house is never sampled mid-recovery). Learned relative to
+   the band we actuate (not the thermostat's own sensor) — a signed number that absorbs both the sensor
+   bias and the band-center-vs-regulation gap, needing no extra sensor. **Two are kept — `cool_offset`
+   and `heat_offset`** — because the equipment regulates to a different band edge in each mode
+   (`band_high` cooling, `band_low` heating), so the offset differs by roughly the band gap; each is
+   updated only for the regime the equipment is actually running (`hvac_action`, with an `hvac_mode`
+   fallback), so a season of cooling can't drag the heating calibration.
+2. **Feedforward jump on change** (target change **or a heat↔cool changeover**): jump the band so
+   `band_center = target + K`, bypassing the deadband + rate-limit gates, where `K` is the active
+   *demand* regime's offset (selected by a sticky deadband-margin hysteresis on the error). Jumping on
+   the regime flip — not only on a target change — keeps cooling responsive at a changeover (the band
+   moves to the cooling offset immediately instead of crawling there via trim). (Pure `decide()`
+   returns the updated offset + its regime; the caller persists them.)
 3. **Band-shift trim (hold):** each tick `error = target - house_average`; if `|error| <= deadband`
    do nothing; else `step = clamp(Kp * error, -MAXSTEP, +MAXSTEP)`, and shift **both** band setpoints
    by `step` (clamped to equipment min/max, preserving the thermostat's min heat/cool gap).
@@ -207,3 +215,15 @@ MIT licensed. README leads with a non-affiliation disclaimer.
 - 2026-06-19 — Master enable toggle = single kill switch returning full control to the thermostat.
 - 2026-06-19 — MIT license; fixed optimal-start lead for v1 (learned lead later).
 - 2026-06-19 — Repo private until v1 works, then public for HACS + home-assistant/brands submission.
+- 2026-06-27 — Split the learned offset into separate `cool_offset`/`heat_offset`, selected by HVAC
+  regime. The equipment regulates to a different band edge per mode, so one scalar is wrong right after
+  a changeover (surfaced live: cooling ≈ −4 °F, heating ≈ −1 °F). Placement uses a sticky demand-regime
+  hysteresis (with a regime-flip feedforward for responsiveness); learning attributes by `hvac_action`.
+  Old single-offset state migrates into `cool_offset` on load (no store-version bump).
+- 2026-06-27 — Gated humidity overcool on the placement regime already being `cool`. Overcool feeds
+  `effective_target`, which the new regime logic uses for the discrete heat↔cool flip; an unconditional
+  overcool could pull `effective_target` below a house still below target during a humid heat-up and
+  manufacture a phantom heat→cool changeover (commanding cooling before reaching target). Restricting it
+  to an established cool regime lets overcool *deepen* cooling but never *create* a changeover; cool
+  entry happens on nominal demand and overcool engages a tick later. (Only reachable with a humidity
+  sensor configured.)

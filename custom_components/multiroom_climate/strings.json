@@ -44,8 +44,11 @@
       }
     },
     "number": {
-      "learned_offset": {
-        "name": "Learned offset"
+      "cool_offset": {
+        "name": "Learned offset (cooling)"
+      },
+      "heat_offset": {
+        "name": "Learned offset (heating)"
       }
     }
   },

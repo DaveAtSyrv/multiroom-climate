@@ -94,6 +94,7 @@ async def test_exposes_shadow_decision_attributes(
             "min_temp": 45.0,
             "max_temp": 95.0,
             "current_temperature": 68.0,
+            "hvac_action": "cooling",  # so in-deadband learning attributes to the cool offset
         },
     )
 
@@ -108,7 +109,8 @@ async def test_exposes_shadow_decision_attributes(
     assert state.attributes["shadow_status"] == "within_deadband"
     assert state.attributes["shadow_sensors_fresh"] == 2
     assert state.attributes["shadow_sensors_total"] == 2
-    assert "shadow_learned_offset" in state.attributes
+    assert "shadow_cool_offset" in state.attributes
+    assert "shadow_heat_offset" in state.attributes
     # Both rooms at 70 → spread 0 → fan would hand back to auto (it's the shadow decision only).
     assert state.attributes["shadow_spread"] == 0.0
     assert state.attributes["shadow_fan_status"] == "spread_low"

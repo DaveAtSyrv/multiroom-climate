@@ -45,6 +45,7 @@ def _run(
     thermo_start: float,
     band_gap: float,
     n_ticks: int,
+    hvac_action: str = "cooling",
 ) -> list[tuple[float, float, float, float]]:
     """Closed-loop sim. ``decide()`` drives the band; the plant moves the thermostat toward the band
     (saturating) and the house tracks it with ``bias``. Returns per-tick (k, house, band_center, thermo).
@@ -56,6 +57,7 @@ def _run(
     band_high = band_center + band_gap / 2.0
     k = k0
     last_target: float | None = None  # force an initial feedforward placement
+    last_placement_regime: str | None = None
     last_change = 0.0
     ts = 0.0
     history: list[tuple[float, float, float, float]] = []
@@ -71,7 +73,14 @@ def _run(
                 band_high=band_high,
                 now_ts=ts,
                 last_change_ts=last_change,
-                learned_offset=k,
+                # ``hvac_action`` selects the regime in play (the thermostat reports what it's doing).
+                # Both offsets seeded to k0 so band placement is well-defined regardless; the action
+                # routes which one learns. Default cooling (the saturated-pulldown scenarios); the
+                # heating mirror passes hvac_action="heating".
+                cool_offset=k,
+                heat_offset=k,
+                hvac_action=hvac_action,
+                last_placement_regime=last_placement_regime,
                 last_target=last_target,
                 thermostat_temperature=thermo,
             ),
@@ -83,6 +92,8 @@ def _run(
             last_change = ts
         if action.new_offset is not None:
             k = action.new_offset
+        if action.placement_regime is not None:
+            last_placement_regime = action.placement_regime
         last_target = target
         # Plant: the equipment drives its own sensor toward the band center, at a capped rate — so a
         # large band-vs-sensor gap can't be tracked (that's the saturation the fix keys on). The
@@ -135,4 +146,27 @@ def test_cold_start_converges_from_a_hot_house() -> None:
 
     assert final_house == pytest.approx(21.0, abs=1.0), f"house did not converge: {final_house:.2f}"
     assert final_k == pytest.approx(-2.0, abs=0.6), f"K did not learn true bias: {final_k:.2f}"
+    assert final_center == pytest.approx(19.0, abs=1.0), f"band did not settle: {final_center:.2f}"
+
+
+# --- heating-regime convergence (split-offset, the heat-side mirror) --------
+
+# The two windup tests above drive a *cooling* loop (house above target). This is the heating mirror —
+# house below a fixed target, the equipment heating up to it, ``hvac_action="heating"`` — proving the
+# heat offset converges on the same stable plant. (Per-regime attribution + non-corruption are pinned
+# by the controller unit tests; the offset routing is exercised here end to end via ``_run``.)
+def test_heating_loop_converges_and_learns_the_heat_offset() -> None:
+    history = _run(
+        target_at=lambda i: 21.0,
+        k0=0.0,
+        bias=2.0,  # true K = -2
+        thermo_start=13.0,  # house starts at 15 (6 below target), heating from cold
+        band_gap=3.0,
+        n_ticks=400,
+        hvac_action="heating",
+    )
+    final_k, final_house, final_center, _ = history[-1]
+
+    assert final_house == pytest.approx(21.0, abs=1.0), f"house did not converge: {final_house:.2f}"
+    assert final_k == pytest.approx(-2.0, abs=0.6), f"heat offset did not learn: {final_k:.2f}"
     assert final_center == pytest.approx(19.0, abs=1.0), f"band did not settle: {final_center:.2f}"
